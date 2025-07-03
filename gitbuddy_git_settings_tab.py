@@ -3,6 +3,7 @@
 import os
 import subprocess
 import json
+import platform # Import platform to detect OS
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QComboBox,
     QMessageBox, QGroupBox, QLineEdit, QTableWidget, QTableWidgetItem,
@@ -324,10 +325,12 @@ class GitSettingsTab(QWidget):
         self.git_accounts_file = os.path.join(self.config_dir, "git_accounts.json")
         self.git_accounts_data = []
         self.last_generated_key_path = None
+        self.git_installed = False # New attribute to track Git installation status
+
+        self.ui_elements_to_disable = [] # List to store UI elements to disable when Git is not found
 
         self.init_ui()
-        self.load_git_config()
-        self.load_git_accounts()
+        self.check_git_installation() # Check Git status at startup
 
     def init_ui(self):
         layout = QVBoxLayout(self)
@@ -360,6 +363,9 @@ class GitSettingsTab(QWidget):
 
         credential_layout.addStretch(1)
         layout.addWidget(credential_group)
+        self.ui_elements_to_disable.extend([
+            self.credential_helper_combobox, self.apply_credential_helper_button
+        ])
 
         # --- SSH Key Management Section ---
         ssh_group = QGroupBox("SSH Key Management")
@@ -374,6 +380,10 @@ class GitSettingsTab(QWidget):
         self.browse_ssh_key_path_button.clicked.connect(self.browse_default_ssh_key_path)
         ssh_key_path_layout.addWidget(self.browse_ssh_key_path_button)
         ssh_layout.addLayout(ssh_key_path_layout)
+        self.ui_elements_to_disable.extend([
+            self.default_ssh_key_path_input, self.browse_ssh_key_path_button
+        ])
+
 
         # SSH Agent Status Label
         self.ssh_agent_status_label = QLabel("SSH Agent Status: Unknown")
@@ -398,6 +408,9 @@ class GitSettingsTab(QWidget):
         ssh_agent_buttons_layout.addWidget(self.add_key_to_agent_button)
         ssh_agent_buttons_layout.addStretch(1)
         ssh_layout.addLayout(ssh_agent_buttons_layout)
+        self.ui_elements_to_disable.extend([
+            self.start_ssh_agent_button, self.add_key_to_agent_button
+        ])
 
         ssh_layout.addStretch(1)
         layout.addWidget(ssh_group)
@@ -408,39 +421,34 @@ class GitSettingsTab(QWidget):
 
         # Table to display accounts
         self.accounts_table_widget = QTableWidget()
-        self.accounts_table_widget.setColumnCount(3) # Only display Username, Email, Host in table
-        self.accounts_table_widget.setHorizontalHeaderLabels(["Username", "Email", "Host"])
+        self.accounts_table_widget.setColumnCount(4) 
+        self.accounts_table_widget.setHorizontalHeaderLabels(["Username", "Email", "Host", "Authentication"])
         
         self.accounts_table_widget.horizontalHeader().setSectionResizeMode(0, QHeaderView.Interactive)
         self.accounts_table_widget.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.accounts_table_widget.horizontalHeader().setSectionResizeMode(2, QHeaderView.Interactive)
+        self.accounts_table_widget.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
 
         self.accounts_table_widget.setSelectionBehavior(QTableWidget.SelectRows)
         self.accounts_table_widget.setSelectionMode(QTableWidget.SingleSelection)
         self.accounts_table_widget.verticalHeader().setVisible(False)
         accounts_layout.addWidget(self.accounts_table_widget)
+        self.ui_elements_to_disable.append(self.accounts_table_widget)
 
         # Buttons below the table
         account_buttons_layout = QHBoxLayout()
 
         # Generate New SSH Key button (moved here, anchored left)
-        # This button's functionality is now primarily handled by the dialog,
-        # but keep it here as a direct access point for generating keys for *selected* accounts.
-        # It will launch the dialog pre-filled with selected account's email.
         self.generate_ssh_key_button = QPushButton("Generate Key for Selected Account...")
         self.generate_ssh_key_button.clicked.connect(self.generate_ssh_key_for_selected_account)
         self.generate_ssh_key_button.setEnabled(False) # Disable until an item is selected
         self.accounts_table_widget.itemSelectionChanged.connect(
-            lambda: self.generate_ssh_key_button.setEnabled(len(self.accounts_table_widget.selectedIndexes()) > 0)
+            lambda: self.generate_ssh_key_button.setEnabled(len(self.accounts_table_widget.selectedIndexes()) > 0) and self.git_installed
         )
         account_buttons_layout.addWidget(self.generate_ssh_key_button)
+        self.ui_elements_to_disable.append(self.generate_ssh_key_button)
 
         account_buttons_layout.addStretch(1) # Push remove button to the right
-
-        # Add New Account button (moved here, next to remove button)
-        self.add_account_button = QPushButton("Add New Account...")
-        self.add_account_button.clicked.connect(self.open_add_account_dialog)
-        account_buttons_layout.addWidget(self.add_account_button)
 
         # Remove Selected Account button (smaller, anchored right)
         self.remove_account_button = QPushButton("Remove Selected Account")
@@ -452,6 +460,13 @@ class GitSettingsTab(QWidget):
         )
         self.remove_account_button.setFixedWidth(180)
         account_buttons_layout.addWidget(self.remove_account_button)
+        self.ui_elements_to_disable.append(self.remove_account_button)
+
+        # Add New Account button (now rightmost)
+        self.add_account_button = QPushButton("Add New Account...")
+        self.add_account_button.clicked.connect(self.open_add_account_dialog)
+        account_buttons_layout.addWidget(self.add_account_button)
+        self.ui_elements_to_disable.append(self.add_account_button)
 
         accounts_layout.addLayout(account_buttons_layout)
 
@@ -460,13 +475,119 @@ class GitSettingsTab(QWidget):
 
         layout.addStretch(1)
 
-        # Refresh button
-        refresh_button = QPushButton("Refresh Git Settings")
-        refresh_button.clicked.connect(self.load_git_config)
-        layout.addWidget(refresh_button)
+        # Refresh/Install Git button
+        self.refresh_install_git_button = QPushButton("Refresh Git Settings")
+        self.refresh_install_git_button.clicked.connect(self.check_git_installation) # Initially connected to check
+        layout.addWidget(self.refresh_install_git_button)
+
+        # Initially disable all elements until Git status is checked
+        self.update_ui_state()
+
+    def check_git_installation(self):
+        """Checks if Git is installed and updates the UI state accordingly."""
+        try:
+            # Run git --version to check if Git is installed
+            subprocess.run(['git', '--version'], check=True, capture_output=True, text=True, timeout=5)
+            self.git_installed = True
+            QMessageBox.information(self, "Git Status", "Git is installed on your system.")
+            self.load_git_config() # Load config only if Git is installed
+        except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+            self.git_installed = False
+            QMessageBox.warning(self, "Git Status", "Git is not found or not working correctly. Please install Git.")
+        finally:
+            self.update_ui_state() # Always update UI state after checking
+
+    def update_ui_state(self):
+        """Enables/disables UI elements based on Git installation status."""
+        for element in self.ui_elements_to_disable:
+            element.setEnabled(self.git_installed)
+        
+        # Special handling for buttons whose enabled state depends on selection AND git_installed
+        self.generate_ssh_key_button.setEnabled(
+            self.git_installed and len(self.accounts_table_widget.selectedIndexes()) > 0
+        )
+        self.remove_account_button.setEnabled(
+            len(self.accounts_table_widget.selectedIndexes()) > 0
+        ) # Remove button doesn't strictly need Git, but usually tied to Git accounts
+
+        if self.git_installed:
+            self.refresh_install_git_button.setText("Refresh Git Settings")
+            self.refresh_install_git_button.clicked.disconnect() # Disconnect old slot
+            self.refresh_install_git_button.clicked.connect(self.load_git_config) # Connect to refresh
+        else:
+            self.refresh_install_git_button.setText("Install Git")
+            # Disconnect previous connections to avoid multiple calls
+            try:
+                self.refresh_install_git_button.clicked.disconnect()
+            except TypeError:
+                pass # Already disconnected or never connected
+            self.refresh_install_git_button.clicked.connect(self.install_git) # Connect to install
+
+    def install_git(self):
+        """Attempts to install Git based on the detected operating system."""
+        os_name = platform.system()
+        install_command = []
+        message = ""
+
+        if os_name == "Linux":
+            distro = platform.freedesktop_os_release().get('ID', '').lower()
+            if "debian" in distro or "ubuntu" in distro:
+                install_command = ['sudo', 'apt-get', 'update', '&&', 'sudo', 'apt-get', 'install', '-y', 'git']
+                message = "Attempting to install Git using apt-get. This may require your sudo password."
+            elif "fedora" in distro or "centos" in distro or "rhel" in distro:
+                install_command = ['sudo', 'yum', 'install', '-y', 'git']
+                message = "Attempting to install Git using yum. This may require your sudo password."
+            elif "arch" in distro:
+                install_command = ['sudo', 'pacman', '-S', '--noconfirm', 'git']
+                message = "Attempting to install Git using pacman. This may require your sudo password."
+            else:
+                QMessageBox.warning(self, "Install Git",
+                                    "Unsupported Linux distribution. Please install Git manually via your package manager.")
+                return
+        elif os_name == "Darwin": # macOS
+            install_command = ['/usr/bin/ruby', '-e', "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)"]
+            install_command += ['brew', 'install', 'git']
+            message = "Attempting to install Homebrew and then Git. This may require your password."
+            QMessageBox.information(self, "Install Git", "Installing Git on macOS usually involves Homebrew. Please follow any terminal prompts.")
+        elif os_name == "Windows":
+            QMessageBox.information(self, "Install Git",
+                                    "On Windows, it's recommended to download and run the Git installer from git-scm.com.\n"
+                                    "Alternatively, you can use Chocolatey (if installed) by running:\n"
+                                    "`choco install git -y` in an administrator PowerShell/CMD.")
+            # We won't attempt automated install on Windows due to complexity of silent installers/admin rights
+            return
+        else:
+            QMessageBox.warning(self, "Install Git",
+                                f"Unsupported operating system: {os_name}. Please install Git manually.")
+            return
+
+        if install_command:
+            QMessageBox.information(self, "Install Git", message)
+            try:
+                # For sudo commands, shell=True might be needed if 'sudo' is not directly in PATH of subprocess
+                # But generally, it's better to avoid shell=True for security.
+                # User will likely be prompted for password in a separate terminal window.
+                process = subprocess.Popen(install_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                stdout, stderr = process.communicate() # Wait for command to complete
+
+                if process.returncode == 0:
+                    QMessageBox.information(self, "Install Git", "Git installation command executed. Please check your terminal for progress and any password prompts.")
+                else:
+                    QMessageBox.critical(self, "Install Git Failed", f"Git installation command failed with error:\n{stderr}")
+            except FileNotFoundError as e:
+                QMessageBox.critical(self, "Install Git Error", f"Installation command not found: {e.filename}. Make sure it's in your PATH.")
+            except Exception as e:
+                QMessageBox.critical(self, "Install Git Error", f"An unexpected error occurred during Git installation: {e}")
+            finally:
+                # After attempting installation, re-check Git status
+                self.check_git_installation()
+
 
     def run_git_command(self, command_args, cwd=None, timeout=60):
         """Helper function to run a git command."""
+        if not self.git_installed:
+            return False, "Git is not installed."
+
         full_command = ['git'] + command_args
         try:
             result = subprocess.run(
@@ -481,7 +602,7 @@ class GitSettingsTab(QWidget):
         except subprocess.CalledProcessError as e:
             return False, f"Git command failed: {e.stderr.strip()}"
         except FileNotFoundError:
-            return False, "Error: 'git' command not found. Please ensure Git is installed and in your PATH."
+            return False, "Error: 'git' command not found. (This should not happen if git_installed is True)"
         except subprocess.TimeoutExpired:
             return False, f"Error: Git command timed out after {timeout} seconds."
         except Exception as e:
@@ -509,7 +630,10 @@ class GitSettingsTab(QWidget):
             return False, f"An unexpected error occurred: {e}"
 
     def load_git_config(self):
-        """Loads current Git credential helper and SSH agent status."""
+        """Loads current Git credential helper and SSH agent status. Only runs if Git is installed."""
+        if not self.git_installed:
+            return
+
         success, output = self.run_git_command(['config', '--global', 'credential.helper'])
         if success:
             index = self.credential_helper_combobox.findText(output)
@@ -526,6 +650,10 @@ class GitSettingsTab(QWidget):
 
     def apply_credential_helper(self):
         """Applies the selected Git credential helper."""
+        if not self.git_installed:
+            QMessageBox.warning(self, "Git Not Installed", "Git is not installed. Cannot apply credential helper.")
+            return
+
         selected_helper = self.credential_helper_combobox.currentText().strip()
         if selected_helper == "":
             reply = QMessageBox.question(self, "Unset Credential Helper",
@@ -546,6 +674,12 @@ class GitSettingsTab(QWidget):
 
     def check_ssh_agent_status(self):
         """Checks and updates the SSH agent status label and button text."""
+        if not self.git_installed:
+            self.ssh_agent_status_label.setText("SSH Agent Status: Git Not Installed")
+            self.start_ssh_agent_button.setEnabled(False)
+            self.add_key_to_agent_button.setEnabled(False)
+            return
+
         if "SSH_AUTH_SOCK" in os.environ and os.path.exists(os.environ["SSH_AUTH_SOCK"]):
             success, output = self.run_command(['ssh-add', '-l'], timeout=5)
             if success:
@@ -566,6 +700,10 @@ class GitSettingsTab(QWidget):
 
     def toggle_ssh_agent(self):
         """Toggles the SSH agent state (start/stop)."""
+        if not self.git_installed:
+            QMessageBox.warning(self, "Git Not Installed", "Git is not installed. Cannot manage SSH Agent.")
+            return
+
         if "SSH_AUTH_SOCK" in os.environ and os.path.exists(os.environ["SSH_AUTH_SOCK"]):
             self.stop_ssh_agent()
         else:
@@ -573,6 +711,10 @@ class GitSettingsTab(QWidget):
 
     def start_ssh_agent_process(self):
         """Starts the SSH agent, sets its environment variables, and enables lingering."""
+        if not self.git_installed:
+            QMessageBox.warning(self, "Git Not Installed", "Git is not installed. Cannot start SSH Agent.")
+            return
+
         try:
             result = subprocess.run(['ssh-agent', '-s'], capture_output=True, text=True, check=True)
             output_lines = result.stdout.strip().split('\n')
@@ -621,6 +763,10 @@ class GitSettingsTab(QWidget):
 
     def stop_ssh_agent(self):
         """Stops the currently running SSH agent."""
+        if not self.git_installed:
+            QMessageBox.warning(self, "Git Not Installed", "Git is not installed. Cannot stop SSH Agent.")
+            return
+
         if "SSH_AGENT_PID" not in os.environ:
             QMessageBox.warning(self, "SSH Agent Not Running", "SSH Agent is not running or its PID is not known to this application.")
             return
@@ -648,6 +794,10 @@ class GitSettingsTab(QWidget):
 
     def browse_default_ssh_key_path(self):
         """Opens a file dialog to select the default SSH private key path."""
+        if not self.git_installed:
+            QMessageBox.warning(self, "Git Not Installed", "Git is not installed. Cannot browse for SSH keys.")
+            return
+
         initial_path = self.default_ssh_key_path_input.text()
         file_path, ok = QFileDialog.getOpenFileName(self, "Select Default SSH Private Key",
                                                     initial_path,
@@ -657,6 +807,10 @@ class GitSettingsTab(QWidget):
 
     def add_ssh_key_to_agent(self):
         """Adds a selected SSH key to the SSH agent."""
+        if not self.git_installed:
+            QMessageBox.warning(self, "Git Not Installed", "Git is not installed. Cannot add key to agent.")
+            return
+
         if "SSH_AUTH_SOCK" not in os.environ or not os.path.exists(os.environ["SSH_AUTH_SOCK"]):
             QMessageBox.warning(self, "SSH Agent Not Running",
                                 "The SSH Agent is not running for this session. "
@@ -686,6 +840,10 @@ class GitSettingsTab(QWidget):
 
     def generate_ssh_key_for_selected_account(self):
         """Launches the AddAccountDialog pre-filled for generating a key for a selected account."""
+        if not self.git_installed:
+            QMessageBox.warning(self, "Git Not Installed", "Git is not installed. Cannot generate SSH key.")
+            return
+
         selected_rows = self.accounts_table_widget.selectedIndexes()
         if not selected_rows:
             QMessageBox.warning(self, "No Account Selected", "Please select a Git account from the table to generate an SSH key for it.")
@@ -709,14 +867,16 @@ class GitSettingsTab(QWidget):
             # If a key was generated, update the last_generated_key_path
             if new_account_data.get('auth_type') == 'SSH Key' and new_account_data.get('ssh_key_path'):
                 self.last_generated_key_path = new_account_data['ssh_key_path']
-            # No need to add/update account here, as this function is specifically for key generation for *existing* accounts.
-            # The SSH config update happens within the dialog's generate_key_pair_in_dialog.
             QMessageBox.information(self, "Key Generation Complete", "SSH key generation process finished.")
         self.load_git_accounts() # Refresh table in case something changed (e.g., if we allowed updating existing entry)
 
 
     def open_add_account_dialog(self):
         """Opens the dialog to add a new Git account."""
+        if not self.git_installed:
+            QMessageBox.warning(self, "Git Not Installed", "Git is not installed. Cannot add new account.")
+            return
+
         dialog = AddAccountDialog(self.config_dir, self.run_command, self)
         if dialog.exec() == QDialog.Accepted:
             new_account_data = dialog.get_account_data()
@@ -752,6 +912,11 @@ class GitSettingsTab(QWidget):
 
     def load_git_accounts(self):
         """Loads Git account data from the git_accounts.json file and populates the table."""
+        if not self.git_installed:
+            self.accounts_table_widget.setRowCount(0) # Clear table if Git not installed
+            self.git_accounts_data = []
+            return
+
         self.accounts_table_widget.setRowCount(0)
         self.git_accounts_data = []
 
@@ -795,10 +960,21 @@ class GitSettingsTab(QWidget):
         self.accounts_table_widget.setItem(row_position, 0, QTableWidgetItem(account_data['username']))
         self.accounts_table_widget.setItem(row_position, 1, QTableWidgetItem(account_data['email']))
         self.accounts_table_widget.setItem(row_position, 2, QTableWidgetItem(account_data['host']))
-        # Note: auth_type and ssh_key_path are stored in self.git_accounts_data but not displayed in the main table for brevity.
+        
+        # Add authentication type and path/obscured text
+        auth_display_text = ""
+        if account_data.get('auth_type') == "SSH Key":
+            auth_display_text = f"SSH Key: {account_data.get('ssh_key_path', 'N/A')}"
+        else: # Default to Password
+            auth_display_text = "Password (managed by Git)"
+        self.accounts_table_widget.setItem(row_position, 3, QTableWidgetItem(auth_display_text))
 
     def save_git_accounts(self):
         """Saves the current list of Git accounts to the git_accounts.json file."""
+        if not self.git_installed:
+            QMessageBox.warning(self, "Git Not Installed", "Git is not installed. Cannot save accounts.")
+            return
+
         try:
             os.makedirs(self.config_dir, exist_ok=True)
             with open(self.git_accounts_file, 'w') as f:
@@ -813,6 +989,10 @@ class GitSettingsTab(QWidget):
 
     def remove_selected_account(self):
         """Removes the selected Git account from the table and data."""
+        if not self.git_installed:
+            QMessageBox.warning(self, "Git Not Installed", "Git is not installed. Cannot remove accounts.")
+            return
+
         selected_rows = self.accounts_table_widget.selectedIndexes()
         if not selected_rows:
             QMessageBox.information(self, "No Selection", "Please select an account to remove.")
