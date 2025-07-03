@@ -19,10 +19,10 @@ CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 # Ensure the configuration directory exists
 os.makedirs(CONFIG_DIR, exist_ok=True)
 
-class GitPullerConfigApp(QMainWindow):
+class GitBuddyGui(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Git Puller Configuration")
+        self.setWindowTitle("GitBuddy")
         self.setGeometry(100, 100, 800, 700) # x, y, width, height adjusted for new controls
 
         self.repositories_data = [] # Stores the full configuration for each repository
@@ -200,7 +200,7 @@ class GitPullerConfigApp(QMainWindow):
         commit_msg_layout.addWidget(QLabel("Commit Message Template:"))
         self.commit_message_input = QLineEdit()
         self.commit_message_input.setPlaceholderText("e.g., Auto-commit: {timestamp}")
-        self.commit_message_input.setText("Auto-commit from Git Puller: {timestamp}")
+        self.commit_message_input.setText("Auto-commit from GitBuddy: {timestamp}")
         commit_msg_layout.addWidget(self.commit_message_input)
         details_layout.addLayout(commit_msg_layout)
 
@@ -505,13 +505,3 @@ class GitPullerConfigApp(QMainWindow):
         # Set text and color using QPalette for better system integration
         self.status_label.setText(f"Service Status: {status_text}")
         self.status_label.setStyleSheet(f"QLabel#statusLabel {{ color: {text_color.name()}; }}")
-
-
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    # Remove app.setStyle("Fusion") to allow native style to be used
-    # On KDE Plasma, this will typically pick up Breeze or the configured theme.
-
-    window = GitPullerConfigApp()
-    window.show()
-    sys.exit(app.exec())

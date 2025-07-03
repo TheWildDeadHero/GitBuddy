@@ -1,0 +1,10 @@
+[Unit]
+Description=Start GitBuddy Service on Boot
+Requires=gitbuddy.service
+After=gitbuddy.service
+
+[Timer]
+OnBootSec=1min
+
+[Install]
+WantedBy=timers.target
