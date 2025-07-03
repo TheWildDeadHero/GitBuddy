@@ -12,9 +12,10 @@ from PySide6.QtCore import Qt, QDir, Signal
 # Import all tab widgets
 from gitbuddy_service_manager_tab import ServiceManagerTab
 from gitbuddy_repo_config_tab import RepoConfigTab
-from gitbuddy_current_branch_tab import CurrentBranchTab # Updated import
+from gitbuddy_current_branch_tab import CurrentBranchTab
 from gitbuddy_merge_tab import MergeTab
 from gitbuddy_bisect_tab import BisectTab
+from gitbuddy_git_settings_tab import GitSettingsTab # New import
 
 # Define the base configuration directory
 CONFIG_DIR = os.path.expanduser("~/.config/git-buddy")
@@ -73,28 +74,29 @@ class GitBuddyApp(QMainWindow):
         main_layout.addWidget(self.tab_widget)
 
         # Create instances of our tab widgets
-        # Pass the global_repo_path_changed signal to tabs that need to react to it
-        self.current_branch_tab = CurrentBranchTab() # Updated class name
+        self.current_branch_tab = CurrentBranchTab()
         self.repo_config_tab = RepoConfigTab(CONFIG_DIR)
         self.merge_tab = MergeTab()
         self.bisect_tab = BisectTab()
         self.service_manager_tab = ServiceManagerTab(CONFIG_DIR)
+        self.git_settings_tab = GitSettingsTab(CONFIG_DIR) # Pass CONFIG_DIR to GitSettingsTab
 
         # Connect the global signal to each tab's update method
-        self.global_repo_path_changed.connect(self.current_branch_tab.set_selected_repo_path) # Updated instance name
+        self.global_repo_path_changed.connect(self.current_branch_tab.set_selected_repo_path)
         self.global_repo_path_changed.connect(self.repo_config_tab.set_selected_repo_path)
         self.global_repo_path_changed.connect(self.merge_tab.set_selected_repo_path)
         self.global_repo_path_changed.connect(self.bisect_tab.set_selected_repo_path)
-        # ServiceManagerTab doesn't directly use a selected repo path, so no connection needed.
+        # GitSettingsTab doesn't directly use a selected repo path, so no connection needed for set_selected_repo_path.
 
         # Connect RepoConfigTab's signal to refresh the global combobox
         self.repo_config_tab.repo_config_changed.connect(self.load_configured_repos_to_selector)
 
         # Add tabs to the QTabWidget in the specified order
-        self.tab_widget.addTab(self.current_branch_tab, "Current Branch") # Updated tab title
+        self.tab_widget.addTab(self.current_branch_tab, "Current Branch")
         self.tab_widget.addTab(self.repo_config_tab, "Repository Configurator")
         self.tab_widget.addTab(self.merge_tab, "Merge")
         self.tab_widget.addTab(self.bisect_tab, "Bisect")
+        self.tab_widget.addTab(self.git_settings_tab, "Git Settings") # Add new tab
         self.tab_widget.addTab(self.service_manager_tab, "Service Manager")
 
     def load_configured_repos_to_selector(self):
@@ -191,10 +193,3 @@ class GitBuddyApp(QMainWindow):
                                     f"The selected directory '{directory}' does not appear to be a Git repository (missing .git folder).")
                 self.global_repo_path_input.clear()
                 self.global_repo_path_changed.emit("")
-
-
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    window = GitBuddyApp()
-    window.show()
-    sys.exit(app.exec())
