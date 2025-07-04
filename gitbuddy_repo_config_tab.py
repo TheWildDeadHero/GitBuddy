@@ -35,10 +35,10 @@ class RepoConfigTab(QWidget):
         self.add_repository_button.clicked.connect(self.add_new_repository_dialog)
         top_action_buttons_layout.addWidget(self.add_repository_button)
 
-        self.remove_button = QPushButton("Remove Selected") # Changed to self.remove_button
+        self.remove_button = QPushButton("Remove Selected")
         self.remove_button.setObjectName("removeButton")
         self.remove_button.clicked.connect(self.remove_selected_repository)
-        top_action_buttons_layout.addWidget(self.remove_button) # Use self.remove_button here too
+        top_action_buttons_layout.addWidget(self.remove_button)
         top_action_buttons_layout.addStretch(1)
 
         layout.addLayout(top_action_buttons_layout)
@@ -62,13 +62,14 @@ class RepoConfigTab(QWidget):
         
         self.repo_table_widget.verticalHeader().setVisible(False)
         self.repo_table_widget.setSortingEnabled(True)
-        self.repo_table_widget.cellChanged.connect(self.handle_table_cell_changed)
-        self.repo_table_widget.itemSelectionChanged.connect(self.load_selected_repository_details_into_form) # Changed connection
+        # Connect signals: these will now directly update the data model
+        self.repo_table_widget.cellChanged.connect(self._on_table_cell_edited)
+        self.repo_table_widget.itemSelectionChanged.connect(self._on_table_selection_changed)
         layout.addWidget(self.repo_table_widget)
 
-        # Re-added Repository Details/Add/Edit Form
-        details_group_box = QGroupBox("Repository Details")
-        details_layout = QVBoxLayout(details_group_box)
+        # Repository Details/Add/Edit Form
+        self.details_group_box = QGroupBox("Repository Details")
+        details_layout = QVBoxLayout(self.details_group_box)
 
         # Path (read-only, displays selected repo path)
         path_layout = QHBoxLayout()
@@ -141,14 +142,12 @@ class RepoConfigTab(QWidget):
         form_buttons_layout.addStretch(1)
         details_layout.addLayout(form_buttons_layout)
 
-        layout.addWidget(details_group_box)
+        layout.addWidget(self.details_group_box)
 
-        # --- Global Action Buttons (Update, Save) ---
+        # --- Global Action Buttons (Save) ---
         global_action_buttons_layout = QHBoxLayout()
         global_action_buttons_layout.addStretch(1)
 
-        # This button is now less critical as changes are saved on cell/form change
-        # but can be kept as a "Force Save All"
         save_all_button = QPushButton("Save All Configuration")
         save_all_button.clicked.connect(self.save_configuration)
         global_action_buttons_layout.addWidget(save_all_button)
@@ -160,38 +159,26 @@ class RepoConfigTab(QWidget):
         self.update_buttons_on_selection()
 
     def _set_form_enabled(self, enabled):
-        """Helper to enable/disable all form fields."""
-        self.auto_pull_checkbox.setEnabled(enabled)
-        self.pull_interval_spinbox.setEnabled(enabled and self.auto_pull_checkbox.isChecked())
-        
-        self.auto_commit_checkbox.setEnabled(enabled)
-        self.commit_interval_spinbox.setEnabled(enabled and self.auto_commit_checkbox.isChecked())
-        self.commit_message_input.setEnabled(enabled and self.auto_commit_checkbox.isChecked())
-
-        self.auto_push_checkbox.setEnabled(enabled)
-        self.push_interval_spinbox.setEnabled(enabled and self.auto_push_checkbox.isChecked())
-
-    def _block_form_signals(self, block):
-        """Helper to block/unblock signals from form widgets."""
-        self.auto_pull_checkbox.blockSignals(block)
-        self.pull_interval_spinbox.blockSignals(block)
-        self.auto_commit_checkbox.blockSignals(block)
-        self.commit_interval_spinbox.blockSignals(block)
-        self.commit_message_input.blockSignals(block)
-        self.auto_push_checkbox.blockSignals(block)
-        self.push_interval_spinbox.blockSignals(block)
+        """Helper to enable/disable the repository details form group box."""
+        self.details_group_box.setEnabled(enabled)
+        # When enabling, ensure sub-fields correctly reflect their checkbox state
+        if enabled:
+            self.pull_interval_spinbox.setEnabled(self.auto_pull_checkbox.isChecked())
+            self.commit_interval_spinbox.setEnabled(self.auto_commit_checkbox.isChecked())
+            self.commit_message_input.setEnabled(self.auto_commit_checkbox.isChecked())
+            self.push_interval_spinbox.setEnabled(self.auto_push_checkbox.isChecked())
 
     def set_selected_repo_path(self, path):
         """Called by GitBuddyApp to update the selected repository path."""
         self.current_selected_global_repo_path = path
         
-        # Attempt to select the item in the table widget if it exists
+        # Find and select the corresponding row in the table
         found_row_index = -1
         for row in range(self.repo_table_widget.rowCount()):
             item = self.repo_table_widget.item(row, 1) # Column 1 is Path
             if item and item.text() == path:
                 found_row_index = row
-                # Block signals to prevent handle_table_cell_changed from firing when programmatically selecting
+                # Block signals to prevent _on_table_selection_changed from firing when programmatically selecting
                 self.repo_table_widget.blockSignals(True)
                 self.repo_table_widget.selectRow(row) # Select the entire row
                 self.repo_table_widget.blockSignals(False)
@@ -199,7 +186,7 @@ class RepoConfigTab(QWidget):
         
         if found_row_index != -1:
             self.current_selected_repo_index = found_row_index
-            self.load_selected_repository_details_into_form()
+            self._load_selected_repository_details_into_form()
         else:
             # If the path is not in our configured list (e.g., "Other" path), clear selection
             self.repo_table_widget.clearSelection()
@@ -213,165 +200,150 @@ class RepoConfigTab(QWidget):
         has_selection = bool(self.repo_table_widget.selectedIndexes())
         self.remove_button.setEnabled(has_selection) # Ensure remove button is enabled/disabled
 
-    # --- Form field change handlers ---
+    # --- Form field change handlers: Update data model and then refresh UI ---
     def _on_form_pull_checkbox_changed(self, state):
         if self.current_selected_repo_index == -1: return
-        self._block_form_signals(True)
         repo_data = self.repositories_data[self.current_selected_repo_index]
         repo_data['auto_pull'] = (state == Qt.Checked)
-        self._set_form_enabled(True) # Re-evaluate enabled state of spinbox
-        self._update_repo_in_table(self.current_selected_repo_index, repo_data)
-        self.save_configuration()
-        self._block_form_signals(False)
+        # Directly enable/disable associated spinbox
+        self.pull_interval_spinbox.setEnabled(state == Qt.Checked)
+        # No longer calling _refresh_ui_after_data_change here to prevent double-click issue
 
     def _on_form_pull_interval_changed(self, value):
         if self.current_selected_repo_index == -1: return
-        self._block_form_signals(True)
         repo_data = self.repositories_data[self.current_selected_repo_index]
         repo_data['pull_interval'] = value
-        self._update_repo_in_table(self.current_selected_repo_index, repo_data)
-        self.save_configuration()
-        self._block_form_signals(False)
+        # No longer calling _refresh_ui_after_data_change here
 
     def _on_form_commit_checkbox_changed(self, state):
         if self.current_selected_repo_index == -1: return
-        self._block_form_signals(True)
         repo_data = self.repositories_data[self.current_selected_repo_index]
         repo_data['auto_commit'] = (state == Qt.Checked)
-        self._set_form_enabled(True) # Re-evaluate enabled state of spinbox and message
-        self._update_repo_in_table(self.current_selected_repo_index, repo_data)
-        self.save_configuration()
-        self._block_form_signals(False)
+        # Directly enable/disable associated spinbox and input
+        self.commit_interval_spinbox.setEnabled(state == Qt.Checked)
+        self.commit_message_input.setEnabled(state == Qt.Checked)
+        # No longer calling _refresh_ui_after_data_change here
 
     def _on_form_commit_interval_changed(self, value):
         if self.current_selected_repo_index == -1: return
-        self._block_form_signals(True)
         repo_data = self.repositories_data[self.current_selected_repo_index]
         repo_data['commit_interval'] = value
-        self._update_repo_in_table(self.current_selected_repo_index, repo_data)
-        self.save_configuration()
-        self._block_form_signals(False)
+        # No longer calling _refresh_ui_after_data_change here
 
     def _on_form_commit_message_changed(self, text):
         if self.current_selected_repo_index == -1: return
-        self._block_form_signals(True)
         repo_data = self.repositories_data[self.current_selected_repo_index]
         repo_data['commit_message_template'] = text
-        self._update_repo_in_table(self.current_selected_repo_index, repo_data)
-        self.save_configuration()
-        self._block_form_signals(False)
+        # No longer calling _refresh_ui_after_data_change here
 
     def _on_form_push_checkbox_changed(self, state):
         if self.current_selected_repo_index == -1: return
-        self._block_form_signals(True)
         repo_data = self.repositories_data[self.current_selected_repo_index]
         repo_data['auto_push'] = (state == Qt.Checked)
-        self._set_form_enabled(True) # Re-evaluate enabled state of spinbox
-        self._update_repo_in_table(self.current_selected_repo_index, repo_data)
-        self.save_configuration()
-        self._block_form_signals(False)
+        # Directly enable/disable associated spinbox
+        self.push_interval_spinbox.setEnabled(state == Qt.Checked)
+        # No longer calling _refresh_ui_after_data_change here
 
     def _on_form_push_interval_changed(self, value):
         if self.current_selected_repo_index == -1: return
-        self._block_form_signals(True)
         repo_data = self.repositories_data[self.current_selected_repo_index]
         repo_data['push_interval'] = value
-        self._update_repo_in_table(self.current_selected_repo_index, repo_data)
-        self.save_configuration()
-        self._block_form_signals(False)
+        # No longer calling _refresh_ui_after_data_change here
     # --- End Form field change handlers ---
 
-
-    def handle_table_cell_changed(self, row, column):
+    def _on_table_cell_edited(self, row, column):
         """Handles changes made directly in the QTableWidget cells."""
-        # This signal is blocked when programmatic updates happen from form,
-        # but will fire if user directly edits a cell.
+        # Block signals to prevent recursion when programmatically updating the cell
         self.repo_table_widget.blockSignals(True)
 
-        selected_path = self.repo_table_widget.item(row, 1).text() # Path is always in column 1
-        repo_data = next((r for r in self.repositories_data if r['path'] == selected_path), None)
-
-        if not repo_data:
-            QMessageBox.critical(self, "Data Error", "Could not find repository data for the edited row.")
+        if not (0 <= row < len(self.repositories_data)):
+            QMessageBox.critical(self, "Data Error", "Edited row index out of bounds.")
             self.repo_table_widget.blockSignals(False)
             return
 
+        repo_data = self.repositories_data[row]
         new_value_str = self.repo_table_widget.item(row, column).text().strip()
 
         try:
             if column == 2: # Auto Pull (min)
-                if new_value_str.lower() == "disabled":
+                if new_value_str.lower() in ["disabled", "off", ""]:
                     repo_data['auto_pull'] = False
                     repo_data['pull_interval'] = 0
                 else:
                     interval = int(new_value_str)
-                    if interval <= 0:
-                        raise ValueError("Interval must be a positive integer.")
+                    if interval <= 0: raise ValueError("Interval must be a positive integer.")
                     repo_data['auto_pull'] = True
                     repo_data['pull_interval'] = interval
-                self.repo_table_widget.item(row, column).setText(str(repo_data['pull_interval']) if repo_data['auto_pull'] else "Disabled")
             
             elif column == 3: # Auto Commit (min)
-                if new_value_str.lower() == "disabled":
+                if new_value_str.lower() in ["disabled", "off", ""]:
                     repo_data['auto_commit'] = False
                     repo_data['commit_interval'] = 0
                 else:
                     interval = int(new_value_str)
-                    if interval <= 0:
-                        raise ValueError("Interval must be a positive integer.")
+                    if interval <= 0: raise ValueError("Interval must be a positive integer.")
                     repo_data['auto_commit'] = True
                     repo_data['commit_interval'] = interval
-                self.repo_table_widget.item(row, column).setText(str(repo_data['commit_interval']) if repo_data['auto_commit'] else "Disabled")
 
             elif column == 4: # Commit Message
                 repo_data['commit_message_template'] = new_value_str
-                self.repo_table_widget.item(row, column).setText(new_value_str) # Ensure consistent display
 
             elif column == 5: # Auto Push (min)
-                if new_value_str.lower() == "disabled":
+                if new_value_str.lower() in ["disabled", "off", ""]:
                     repo_data['auto_push'] = False
                     repo_data['push_interval'] = 0
                 else:
                     interval = int(new_value_str)
-                    if interval <= 0:
-                        raise ValueError("Interval must be a positive integer.")
+                    if interval <= 0: raise ValueError("Interval must be a positive integer.")
                     repo_data['auto_push'] = True
                     repo_data['push_interval'] = interval
-                self.repo_table_widget.item(row, column).setText(str(repo_data['push_interval']) if repo_data['auto_push'] else "Disabled")
-
-            # After updating data from table, update the form if this row is selected
-            if row == self.current_selected_repo_index:
-                self._block_form_signals(True) # Block form signals to prevent re-triggering table update
-                self._populate_form_from_repo_data(repo_data)
-                self._block_form_signals(False)
+            
+            # After updating data, refresh the UI elements
+            self._refresh_ui_after_data_change(row)
 
         except ValueError as e:
             QMessageBox.warning(self, "Invalid Input", f"Invalid value for column '{self.repo_table_widget.horizontalHeaderItem(column).text()}': {e}\n"
-                                 "Please enter a positive integer or 'Disabled'.")
-            # Revert to original value in table cell
-            original_repo_data = next((r for r in self.repositories_data if r['path'] == selected_path), None)
-            if original_repo_data:
-                if column == 2: # Auto Pull
-                    self.repo_table_widget.item(row, column).setText(str(original_repo_data['pull_interval']) if original_repo_data['auto_pull'] else "Disabled")
-                elif column == 3: # Auto Commit
-                    self.repo_table_widget.item(row, column).setText(str(original_repo_data['commit_interval']) if original_repo_data['auto_commit'] else "Disabled")
-                elif column == 4: # Commit Message
-                    self.repo_table_widget.item(row, column).setText(original_repo_data['commit_message_template'])
-                elif column == 5: # Auto Push
-                    self.repo_table_widget.item(row, column).setText(str(original_repo_data['push_interval']) if original_repo_data['auto_push'] else "Disabled")
+                                 "Please enter a positive integer or 'Disabled'/'Off'.")
+            # Revert the table cell to its original value from the data model
+            self._update_table_cell_from_data(row, column, repo_data)
         finally:
             self.repo_table_widget.blockSignals(False)
             self.save_configuration() # Save configuration after each valid cell change
 
+    def _on_table_selection_changed(self):
+        """Handles selection changes in the QTableWidget."""
+        selected_rows = self.repo_table_widget.selectedIndexes()
+        if not selected_rows:
+            self.current_selected_repo_index = -1
+            self.clear_form_and_selection()
+            return
+
+        selected_row = selected_rows[0].row()
+        self.current_selected_repo_index = selected_row
+        self._load_selected_repository_details_into_form()
+        self.update_buttons_on_selection()
+
+    def _refresh_ui_after_data_change(self, changed_row_index):
+        """Refreshes the table row and the form if the changed row is selected."""
+        # Update the table row
+        if 0 <= changed_row_index < self.repo_table_widget.rowCount():
+            self._update_table_row_from_data(changed_row_index, self.repositories_data[changed_row_index])
+        
+        # If the changed row is the currently selected one, update the form
+        if changed_row_index == self.current_selected_repo_index:
+            self._load_selected_repository_details_into_form()
+
+        self.update() # Force repaint of the entire tab
+
     def load_repositories_to_list(self):
         """Loads repository data from the config file and populates the QTableWidget."""
-        # Temporarily block signals to prevent handle_table_cell_changed from firing during load
-        self.repo_table_widget.blockSignals(True)
+        self.repo_table_widget.blockSignals(True) # Block signals during initial load
         self.repo_table_widget.setRowCount(0) # Clear existing rows
         self.repositories_data = []
 
         if not os.path.exists(self.config_file):
             self.repo_table_widget.blockSignals(False)
+            self.repo_table_widget.viewport().update()
             return
 
         try:
@@ -381,13 +353,15 @@ class RepoConfigTab(QWidget):
                     QMessageBox.warning(self, "Configuration Error",
                                         f"Configuration file '{self.config_file}' is malformed. Expected a list.")
                     self.repo_table_widget.blockSignals(False)
+                    self.repo_table_widget.viewport().update()
                     return
                 
                 for entry in repos_config:
                     if isinstance(entry, dict) and 'path' in entry:
+                        # Ensure all keys are present with default values
                         repo_data = {
                             'path': entry['path'],
-                            'auto_pull': entry.get('auto_pull', True),
+                            'auto_pull': entry.get('auto_pull', False),
                             'pull_interval': entry.get('pull_interval', 300) // 60, # Convert to minutes
                             'auto_commit': entry.get('auto_commit', False),
                             'commit_interval': entry.get('commit_interval', 3600) // 60, # Convert to minutes
@@ -407,127 +381,117 @@ class RepoConfigTab(QWidget):
             QMessageBox.critical(self, "Error", f"An unexpected error occurred while loading config: {e}")
         finally:
             self.repo_table_widget.blockSignals(False)
-
+            self.repo_table_widget.viewport().update() # Force repaint after loading
 
     def _add_repo_to_table(self, repo_data):
         """Helper to add a single repository's data to the QTableWidget."""
         row_position = self.repo_table_widget.rowCount()
         self.repo_table_widget.insertRow(row_position)
+        self._update_table_row_from_data(row_position, repo_data)
+
+    def _update_table_row_from_data(self, row, repo_data):
+        """Helper to update a single repository's data in the QTableWidget from the data model."""
+        self.repo_table_widget.blockSignals(True) # Block signals during programmatic update
 
         repo_name = os.path.basename(repo_data['path'])
 
         # Name column (Non-editable)
         name_item = QTableWidgetItem(repo_name)
         name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
-        self.repo_table_widget.setItem(row_position, 0, name_item)
+        self.repo_table_widget.setItem(row, 0, name_item)
 
         # Path column (Non-editable)
         path_item = QTableWidgetItem(repo_data['path'])
         path_item.setFlags(path_item.flags() & ~Qt.ItemIsEditable)
-        self.repo_table_widget.setItem(row_position, 1, path_item)
+        self.repo_table_widget.setItem(row, 1, path_item)
         
         # Auto Pull column
         pull_text = str(repo_data['pull_interval']) if repo_data['auto_pull'] else "Disabled"
-        self.repo_table_widget.setItem(row_position, 2, QTableWidgetItem(pull_text))
+        self.repo_table_widget.setItem(row, 2, QTableWidgetItem(pull_text))
         
         # Auto Commit column
         commit_text = str(repo_data['commit_interval']) if repo_data['auto_commit'] else "Disabled"
-        self.repo_table_widget.setItem(row_position, 3, QTableWidgetItem(commit_text))
+        self.repo_table_widget.setItem(row, 3, QTableWidgetItem(commit_text))
 
         # Commit Message column
-        self.repo_table_widget.setItem(row_position, 4, QTableWidgetItem(repo_data['commit_message_template']))
+        self.repo_table_widget.setItem(row, 4, QTableWidgetItem(repo_data['commit_message_template']))
         
         # Auto Push column
         push_text = str(repo_data['push_interval']) if repo_data['auto_push'] else "Disabled"
-        self.repo_table_widget.setItem(row_position, 5, QTableWidgetItem(push_text))
-
-    def _update_repo_in_table(self, row, repo_data):
-        """Helper to update a single repository's data in the QTableWidget."""
-        # Temporarily block signals to prevent handle_table_cell_changed from firing during programmatic update
-        self.repo_table_widget.blockSignals(True)
-
-        repo_name = os.path.basename(repo_data['path'])
-        # Update Name and Path, ensuring they remain non-editable
-        name_item = self.repo_table_widget.item(row, 0)
-        if name_item:
-            name_item.setText(repo_name)
-            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
-        else: # Create if it doesn't exist (shouldn't happen in update)
-            name_item = QTableWidgetItem(repo_name)
-            name_item.setFlags(name_item.flags() & ~Qt.ItemIsEditable)
-            self.repo_table_widget.setItem(row, 0, name_item)
-
-        path_item = self.repo_table_widget.item(row, 1)
-        if path_item:
-            path_item.setText(repo_data['path'])
-            path_item.setFlags(path_item.flags() & ~Qt.ItemIsEditable)
-        else: # Create if it doesn't exist
-            path_item = QTableWidgetItem(repo_data['path'])
-            path_item.setFlags(path_item.flags() & ~Qt.ItemIsEditable)
-            self.repo_table_widget.setItem(row, 1, path_item)
-        
-        # Auto Pull column
-        pull_text = str(repo_data['pull_interval']) if repo_data['auto_pull'] else "Disabled"
-        self.repo_table_widget.item(row, 2).setText(pull_text)
-        
-        # Auto Commit column
-        commit_text = str(repo_data['commit_interval']) if repo_data['auto_commit'] else "Disabled"
-        self.repo_table_widget.item(row, 3).setText(commit_text)
-
-        # Commit Message column
-        self.repo_table_widget.item(row, 4).setText(repo_data['commit_message_template'])
-        
-        # Auto Push column
-        push_text = str(repo_data['push_interval']) if repo_data['auto_push'] else "Disabled"
-        self.repo_table_widget.item(row, 5).setText(push_text)
+        self.repo_table_widget.setItem(row, 5, QTableWidgetItem(push_text))
 
         self.repo_table_widget.blockSignals(False)
+        self.repo_table_widget.viewport().update() # Force repaint
+
+    def _update_table_cell_from_data(self, row, column, repo_data):
+        """Helper to update a specific cell in the table from the data model."""
+        self.repo_table_widget.blockSignals(True) # Block signals during programmatic update
+        
+        if column == 2: # Auto Pull
+            text = str(repo_data['pull_interval']) if repo_data['auto_pull'] else "Disabled"
+        elif column == 3: # Auto Commit
+            text = str(repo_data['commit_interval']) if repo_data['auto_commit'] else "Disabled"
+        elif column == 4: # Commit Message
+            text = repo_data['commit_message_template']
+        elif column == 5: # Auto Push
+            text = str(repo_data['push_interval']) if repo_data['auto_push'] else "Disabled"
+        else:
+            text = "" # Should not happen for editable columns
+
+        self.repo_table_widget.item(row, column).setText(text)
+        self.repo_table_widget.blockSignals(False)
+        self.repo_table_widget.viewport().update()
 
 
-    def load_selected_repository_details_into_form(self):
-        """Loads details of the selected repository from the table into the form fields."""
-        selected_rows = self.repo_table_widget.selectedIndexes()
-        if not selected_rows:
-            self.current_selected_repo_index = -1
+    def _load_selected_repository_details_into_form(self):
+        """Loads details of the selected repository from the data model into the form fields."""
+        if self.current_selected_repo_index == -1:
             self.clear_form_and_selection()
             return
 
-        selected_row = selected_rows[0].row()
-        self.current_selected_repo_index = selected_row
-        selected_path = self.repo_table_widget.item(selected_row, 1).text()
-        
-        repo_data = next((r for r in self.repositories_data if r['path'] == selected_path), None)
+        repo_data = self.repositories_data[self.current_selected_repo_index]
 
-        if repo_data:
-            self._set_form_enabled(True)
-            self._block_form_signals(True) # Block signals before populating to avoid re-triggering updates
-
-            self.repo_path_input.setText(repo_data['path'])
-            self._populate_form_from_repo_data(repo_data)
-
-            self._block_form_signals(False)
-        else:
-            self.current_selected_repo_index = -1
-            self.clear_form_and_selection()
+        self._set_form_enabled(True)
+        self.repo_path_input.setText(repo_data['path'])
+        self._populate_form_from_repo_data(repo_data)
+        self.update() # Force repaint of the form area after loading
 
 
     def _populate_form_from_repo_data(self, repo_data):
         """Helper to populate form fields from a repo_data dictionary."""
+        # Disconnect signals to prevent them from firing when setting values programmatically
+        self.auto_pull_checkbox.stateChanged.disconnect(self._on_form_pull_checkbox_changed)
+        self.pull_interval_spinbox.valueChanged.disconnect(self._on_form_pull_interval_changed)
+        self.auto_commit_checkbox.stateChanged.disconnect(self._on_form_commit_checkbox_changed)
+        self.commit_interval_spinbox.valueChanged.disconnect(self._on_form_commit_interval_changed)
+        self.commit_message_input.textChanged.disconnect(self._on_form_commit_message_changed)
+        self.auto_push_checkbox.stateChanged.disconnect(self._on_form_push_checkbox_changed)
+        self.push_interval_spinbox.valueChanged.disconnect(self._on_form_push_interval_changed)
+
+        self.repo_path_input.setText(repo_data['path']) # Ensure this is always set
+
         self.auto_pull_checkbox.setChecked(repo_data['auto_pull'])
         self.pull_interval_spinbox.setValue(repo_data['pull_interval'])
-        
+        self.pull_interval_spinbox.setEnabled(repo_data['auto_pull'])
+
         self.auto_commit_checkbox.setChecked(repo_data['auto_commit'])
         self.commit_interval_spinbox.setValue(repo_data['commit_interval'])
         self.commit_message_input.setText(repo_data['commit_message_template'])
+        self.commit_interval_spinbox.setEnabled(repo_data['auto_commit'])
+        self.commit_message_input.setEnabled(repo_data['auto_commit'])
         
         self.auto_push_checkbox.setChecked(repo_data['auto_push'])
         self.push_interval_spinbox.setValue(repo_data['push_interval'])
-
-        # Ensure correct enabled state after setting values
-        self.pull_interval_spinbox.setEnabled(repo_data['auto_pull'])
-        self.commit_interval_spinbox.setEnabled(repo_data['auto_commit'])
-        self.commit_message_input.setEnabled(repo_data['auto_commit'])
         self.push_interval_spinbox.setEnabled(repo_data['auto_push'])
+
+        # Reconnect signals
+        self.auto_pull_checkbox.stateChanged.connect(self._on_form_pull_checkbox_changed)
+        self.pull_interval_spinbox.valueChanged.connect(self._on_form_pull_interval_changed)
+        self.auto_commit_checkbox.stateChanged.connect(self._on_form_commit_checkbox_changed)
+        self.commit_interval_spinbox.valueChanged.connect(self._on_form_commit_interval_changed)
+        self.commit_message_input.textChanged.connect(self._on_form_commit_message_changed)
+        self.auto_push_checkbox.stateChanged.connect(self._on_form_push_checkbox_changed)
+        self.push_interval_spinbox.valueChanged.connect(self._on_form_push_interval_changed)
 
 
     def clear_form_and_selection(self):
@@ -535,23 +499,43 @@ class RepoConfigTab(QWidget):
         self.repo_table_widget.clearSelection() # Clear table selection
         self.current_selected_repo_index = -1
         
-        self._block_form_signals(True) # Block signals before clearing to avoid re-triggering updates
-
         self.repo_path_input.clear()
         
+        # Disconnect signals before clearing/setting default values
+        self.auto_pull_checkbox.stateChanged.disconnect(self._on_form_pull_checkbox_changed)
+        self.pull_interval_spinbox.valueChanged.disconnect(self._on_form_pull_interval_changed)
+        self.auto_commit_checkbox.stateChanged.disconnect(self._on_form_commit_checkbox_changed)
+        self.commit_interval_spinbox.valueChanged.disconnect(self._on_form_commit_interval_changed)
+        self.commit_message_input.textChanged.disconnect(self._on_form_commit_message_changed)
+        self.auto_push_checkbox.stateChanged.disconnect(self._on_form_push_checkbox_changed)
+        self.push_interval_spinbox.valueChanged.disconnect(self._on_form_push_interval_changed)
+
         self.auto_pull_checkbox.setChecked(False)
         self.pull_interval_spinbox.setValue(5)
+        self.pull_interval_spinbox.setEnabled(False) # Ensure disabled when checkbox is unchecked
         
         self.auto_commit_checkbox.setChecked(False)
         self.commit_interval_spinbox.setValue(60)
         self.commit_message_input.setText("Auto-commit from GitBuddy: {timestamp}")
+        self.commit_interval_spinbox.setEnabled(False)
+        self.commit_message_input.setEnabled(False)
         
         self.auto_push_checkbox.setChecked(False)
         self.push_interval_spinbox.setValue(60)
+        self.push_interval_spinbox.setEnabled(False)
         
         self._set_form_enabled(False) # Disable form fields
-        self._block_form_signals(False)
 
+        # Reconnect signals
+        self.auto_pull_checkbox.stateChanged.connect(self._on_form_pull_checkbox_changed)
+        self.pull_interval_spinbox.valueChanged.connect(self._on_form_pull_interval_changed)
+        self.auto_commit_checkbox.stateChanged.connect(self._on_form_commit_checkbox_changed)
+        self.commit_interval_spinbox.valueChanged.connect(self._on_form_commit_interval_changed)
+        self.commit_message_input.textChanged.connect(self._on_form_commit_message_changed)
+        self.auto_push_checkbox.stateChanged.connect(self._on_form_push_checkbox_changed)
+        self.push_interval_spinbox.valueChanged.connect(self._on_form_push_interval_changed)
+
+        self.update() # Force repaint of the form area
 
     def add_new_repository_dialog(self):
         """Opens a directory selector dialog to add a new Git repository."""
@@ -593,11 +577,6 @@ class RepoConfigTab(QWidget):
         
         self.clear_form_and_selection() # Clear selection and update buttons
         self.save_configuration() # Save changes to file
-
-    def update_selected_repository(self):
-        """This method is now largely redundant as changes are saved on cell/form change."""
-        QMessageBox.information(self, "Info", "Changes are automatically saved when you modify values in the table or form.")
-
 
     def remove_selected_repository(self):
         """Removes the selected repository from the list widget and data."""
