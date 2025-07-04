@@ -70,7 +70,7 @@ class CurrentBranchTab(QWidget): # Renamed class
         top_row_layout.addWidget(self.fetch_button)
 
         # Commit Button (now triggers dialog)
-        self.commit_button = QPushButton("Commit All Changes")
+        self.commit_button = QPushButton("Commit") # Changed text to "Commit"
         self.commit_button.clicked.connect(self.commit_repository)
         self.commit_button.setEnabled(False)
         self.commit_button.setFixedWidth(button_width) # Set fixed width
@@ -131,7 +131,6 @@ class CurrentBranchTab(QWidget): # Renamed class
             self.fetch_button.setEnabled(True) # Enable Fetch button
             self.pull_button.setEnabled(True)
             self.commit_button.setEnabled(True)
-            # self.commit_message_input.setEnabled(True) # Removed
             self.push_button.setEnabled(True)
         else:
             self.git_graph_widget.set_commits_data([]) # Clear graph
@@ -143,7 +142,6 @@ class CurrentBranchTab(QWidget): # Renamed class
             self.fetch_button.setEnabled(False) # Disable Fetch button
             self.pull_button.setEnabled(False)
             self.commit_button.setEnabled(False)
-            # self.commit_message_input.setEnabled(False) # Removed
             self.push_button.setEnabled(False)
 
 
