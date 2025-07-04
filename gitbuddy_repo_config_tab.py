@@ -202,55 +202,53 @@ class RepoConfigTab(QWidget):
 
     # --- Form field change handlers: Update data model and then refresh UI ---
     def _on_form_pull_checkbox_changed(self, state):
-        print("???")
         if self.current_selected_repo_index == -1: return
         repo_data = self.repositories_data[self.current_selected_repo_index]
-        repo_data['auto_pull'] = (state == Qt.CheckState.Checked)
+        repo_data['auto_pull'] = (self.auto_pull_checkbox.isChecked())
         # Directly enable/disable associated spinbox
-        self.pull_interval_spinbox.setEnabled(state == Qt.CheckState.Checked)
-        # No longer calling _refresh_ui_after_data_change here to prevent double-click issue
+        self.pull_interval_spinbox.setEnabled(self.auto_pull_checkbox.isChecked())
+        self._update_table_row_from_data(self.current_selected_repo_index, repo_data) # Update table row
 
     def _on_form_pull_interval_changed(self, value):
         if self.current_selected_repo_index == -1: return
         repo_data = self.repositories_data[self.current_selected_repo_index]
         repo_data['pull_interval'] = value
-        # No longer calling _refresh_ui_after_data_change here
+        self._update_table_row_from_data(self.current_selected_repo_index, repo_data) # Update table row
 
     def _on_form_commit_checkbox_changed(self, state):
         if self.current_selected_repo_index == -1: return
         repo_data = self.repositories_data[self.current_selected_repo_index]
-        repo_data['auto_commit'] = (state == Qt.CheckState.Checked)
+        repo_data['auto_commit'] = (self.auto_commit_checkbox.isChecked())
         # Directly enable/disable associated spinbox and input
-        self.commit_interval_spinbox.setEnabled(state == Qt.CheckState.Checked)
-        self.commit_message_input.setEnabled(state == Qt.CheckState.Checked)
-        # No longer calling _refresh_ui_after_data_change here
+        self.commit_interval_spinbox.setEnabled(repo_data['auto_commit'])
+        self.commit_message_input.setEnabled(repo_data['auto_commit'])
+        self._update_table_row_from_data(self.current_selected_repo_index, repo_data) # Update table row
 
     def _on_form_commit_interval_changed(self, value):
         if self.current_selected_repo_index == -1: return
         repo_data = self.repositories_data[self.current_selected_repo_index]
         repo_data['commit_interval'] = value
-        # No longer calling _refresh_ui_after_data_change here
+        self._update_table_row_from_data(self.current_selected_repo_index, repo_data) # Update table row
 
     def _on_form_commit_message_changed(self, text):
         if self.current_selected_repo_index == -1: return
         repo_data = self.repositories_data[self.current_selected_repo_index]
         repo_data['commit_message_template'] = text
-        # No longer calling _refresh_ui_after_data_change here
+        self._update_table_row_from_data(self.current_selected_repo_index, repo_data) # Update table row
 
     def _on_form_push_checkbox_changed(self, state):
         if self.current_selected_repo_index == -1: return
         repo_data = self.repositories_data[self.current_selected_repo_index]
-        repo_data['auto_push'] = (state == Qt.CheckState.Checked)
-        print(repo_data['auto_push'])
+        repo_data['auto_push'] = (self.auto_push_checkbox.isChecked())
         # Directly enable/disable associated spinbox
-        self.push_interval_spinbox.setEnabled(state == Qt.CheckState.Checked)
-        # No longer calling _refresh_ui_after_data_change here
+        self.push_interval_spinbox.setEnabled(self.auto_push_checkbox.isChecked())
+        self._update_table_row_from_data(self.current_selected_repo_index, repo_data) # Update table row
 
     def _on_form_push_interval_changed(self, value):
         if self.current_selected_repo_index == -1: return
         repo_data = self.repositories_data[self.current_selected_repo_index]
         repo_data['push_interval'] = value
-        # No longer calling _refresh_ui_after_data_change here
+        self._update_table_row_from_data(self.current_selected_repo_index, repo_data) # Update table row
     # --- End Form field change handlers ---
 
     def _on_table_cell_edited(self, row, column):
@@ -472,19 +470,19 @@ class RepoConfigTab(QWidget):
 
         self.repo_path_input.setText(repo_data['path']) # Ensure this is always set
 
-        # Set checkbox state, then explicitly call the handler to update enabled state of associated inputs
-        
+        # Set checkbox state and directly update enabled state of associated inputs
         self.auto_pull_checkbox.setChecked(repo_data['auto_pull'])
-        self._on_form_pull_checkbox_changed(self.auto_pull_checkbox.checkState()) # Explicitly call handler
+        self.pull_interval_spinbox.setEnabled(repo_data['auto_pull']) 
         self.pull_interval_spinbox.setValue(repo_data['pull_interval'])
 
         self.auto_commit_checkbox.setChecked(repo_data['auto_commit'])
-        self._on_form_commit_checkbox_changed(self.auto_commit_checkbox.checkState()) # Explicitly call handler
+        self.commit_interval_spinbox.setEnabled(repo_data['auto_commit'])
+        self.commit_message_input.setEnabled(repo_data['auto_commit'])
         self.commit_interval_spinbox.setValue(repo_data['commit_interval'])
         self.commit_message_input.setText(repo_data['commit_message_template'])
         
         self.auto_push_checkbox.setChecked(repo_data['auto_push'])
-        self._on_form_push_checkbox_changed(self.auto_push_checkbox.checkState()) # Explicitly call handler
+        self.push_interval_spinbox.setEnabled(repo_data['auto_push'])
         self.push_interval_spinbox.setValue(repo_data['push_interval'])
 
         # Reconnect signals
@@ -513,19 +511,20 @@ class RepoConfigTab(QWidget):
         self.auto_push_checkbox.stateChanged.disconnect(self._on_form_push_checkbox_changed)
         self.push_interval_spinbox.valueChanged.disconnect(self._on_form_push_interval_changed)
 
-        # Set checkbox state, then explicitly call the handler to update enabled state of associated inputs
+        # Set checkbox state and directly update enabled state of associated inputs
         self.auto_pull_checkbox.setChecked(False)
-        self._on_form_pull_checkbox_changed(Qt.Unchecked) # Explicitly call handler
-        self.pull_interval_spinbox.setValue(120)
+        self.pull_interval_spinbox.setEnabled(False) 
+        self.pull_interval_spinbox.setValue(120) # Changed default pull interval
         
         self.auto_commit_checkbox.setChecked(False)
-        self._on_form_commit_checkbox_changed(Qt.Unchecked) # Explicitly call handler
-        self.commit_interval_spinbox.setValue(15)
+        self.commit_interval_spinbox.setEnabled(False)
+        self.commit_message_input.setEnabled(False)
+        self.commit_interval_spinbox.setValue(20) # Changed default commit interval
         self.commit_message_input.setText("Auto-commit from GitBuddy: {timestamp}")
         
         self.auto_push_checkbox.setChecked(False)
-        self._on_form_push_checkbox_changed(Qt.Unchecked) # Explicitly call handler
-        self.push_interval_spinbox.setValue(60)
+        self.push_interval_spinbox.setEnabled(False)
+        self.push_interval_spinbox.setValue(60) # Changed default push interval
         
         self._set_form_enabled(False) # Disable form group box
 
@@ -566,12 +565,12 @@ class RepoConfigTab(QWidget):
         new_repo_data = {
             'path': normalized_path,
             'auto_pull': False, # Default to False for new additions
-            'pull_interval': 5,
+            'pull_interval': 120, # Changed default pull interval
             'auto_commit': False,
-            'commit_interval': 60,
+            'commit_interval': 20, # Changed default commit interval
             'commit_message_template': "Auto-commit from GitBuddy: {timestamp}",
             'auto_push': False,
-            'push_interval': 60
+            'push_interval': 60 # Changed default push interval
         }
 
         self.repositories_data.append(new_repo_data)
@@ -613,7 +612,7 @@ class RepoConfigTab(QWidget):
             repo_copy['pull_interval'] = repo_copy['pull_interval'] * 60
             repo_copy['commit_interval'] = repo_copy['commit_interval'] * 60
             repo_copy['push_interval'] = repo_copy['push_interval'] * 60
-            # Exclude runtime-only keys like last_pulled_at, last_pushed_at
+            # Exclude runtime-only keys like last_pulled_at, last_pushed_at, last_committed_at
             config_to_save.append({k: v for k, v in repo_copy.items() if k not in ['last_pulled_at', 'last_pushed_at', 'last_committed_at']})
 
         try:

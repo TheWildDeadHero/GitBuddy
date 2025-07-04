@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QPalette, QColor
 import time # Import time for sleep
+import logging # Import logging
 
 class ServiceManagerTab(QWidget):
     def __init__(self, config_dir, parent=None):
@@ -85,6 +86,13 @@ class ServiceManagerTab(QWidget):
         self.uninstall_button.setObjectName("removeButton")
         self.uninstall_button.clicked.connect(self.uninstall_all_services)
         install_buttons_layout.addWidget(self.uninstall_button)
+        
+        # New: Force Uninstall Button
+        self.force_uninstall_button = QPushButton("Force Uninstall Services")
+        self.force_uninstall_button.setObjectName("removeButton") # Apply red styling
+        self.force_uninstall_button.clicked.connect(self.force_uninstall_all_services)
+        install_buttons_layout.addWidget(self.force_uninstall_button)
+
         install_buttons_layout.addStretch(1)
         
         installation_layout.addLayout(install_buttons_layout)
@@ -168,7 +176,6 @@ class ServiceManagerTab(QWidget):
     def install_all_services(self):
         """Installs (creates and enables) all GitBuddy systemd units."""
         if self.are_all_services_installed():
-            # QMessageBox.information(self, "Installation Status", "All GitBuddy services are already installed and enabled.") # Removed
             return
 
         python_executable = sys.executable
@@ -357,12 +364,71 @@ WantedBy=graphical-session.target
         finally:
             self.update_service_status()
 
+    def force_uninstall_all_services(self):
+        """
+        Forcefully uninstalls (stops, disables, and removes) all GitBuddy systemd units,
+        suppressing errors during stop/disable attempts.
+        """
+        reply = QMessageBox.question(self, "Confirm Force Uninstall",
+                                     "WARNING: This will attempt to forcefully stop, disable, and remove ALL GitBuddy services and timers.\n"
+                                     "This action is irreversible and may lead to unexpected behavior if services are in a bad state.\n\n"
+                                     "Are you absolutely sure you want to proceed?",
+                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply == QMessageBox.No:
+            return
+
+        logging.info("Attempting forceful uninstallation of all GitBuddy services.")
+        try:
+            # Stop all services (always suppress errors for force uninstall)
+            logging.info("Stopping services...")
+            self.run_systemctl_command("stop", "gitbuddy.timer", suppress_errors=True)
+            self.run_systemctl_command("stop", "gitbuddy.service", suppress_errors=True)
+            self.run_systemctl_command("stop", "gitbuddy-logout-sync.service", suppress_errors=True)
+            self.run_systemctl_command("stop", "gitbuddy-login-pull.service", suppress_errors=True)
+            time.sleep(1) # Give services a moment to stop
+
+            # Disable all services (always suppress errors for force uninstall)
+            logging.info("Disabling services...")
+            self.run_systemctl_command("disable", "gitbuddy.timer", suppress_errors=True)
+            self.run_systemctl_command("disable", "gitbuddy.service", suppress_errors=True)
+            self.run_systemctl_command("disable", "gitbuddy-logout-sync.service", suppress_errors=True)
+            self.run_systemctl_command("disable", "gitbuddy-login-pull.service", suppress_errors=True)
+
+            # Remove the unit files
+            logging.info("Removing unit files...")
+            files_to_remove = [
+                self.service_file_path,
+                self.timer_file_path,
+                self.logout_sync_service_file_path,
+                self.login_pull_service_file_path
+            ]
+            for f_path in files_to_remove:
+                if os.path.exists(f_path):
+                    os.remove(f_path)
+                    logging.info(f"Removed unit file: {f_path}")
+                else:
+                    logging.info(f"Unit file not found, skipping removal: {f_path}")
+
+            # Reload systemd daemon to unregister the units
+            logging.info("Reloading systemd daemon...")
+            stdout, stderr, success = self.run_systemctl_command("daemon-reload", "")
+            if not success:
+                QMessageBox.critical(self, "Force Uninstall Error", f"Failed to reload systemd daemon during force uninstall:\n{stderr}\n"
+                                     "You may need to manually run `systemctl --user daemon-reload`.")
+            else:
+                QMessageBox.information(self, "Force Uninstall Complete",
+                                        "All GitBuddy services and timers forcefully uninstalled. "
+                                        "Please verify their status if you encounter any issues.")
+        except Exception as e:
+            QMessageBox.critical(self, "Force Uninstall Error", f"An unexpected error occurred during forceful uninstallation: {e}")
+        finally:
+            self.update_service_status() # Always update status after attempt
+
     def start_service(self):
         """Starts the main periodic systemd service."""
         # Start the timer unit; it will activate the service
         stdout, stderr, success = self.run_systemctl_command("start", "gitbuddy.timer")
         if success:
-            # QMessageBox.information(self, "Service Control", "GitBuddy periodic service started successfully.") # Removed
             pass
         else:
             QMessageBox.warning(self, "Service Control", f"Failed to start periodic service:\n{stderr}")
@@ -373,7 +439,6 @@ WantedBy=graphical-session.target
         # Stop the timer unit; it will also stop the service it manages
         stdout, stderr, success = self.run_systemctl_command("stop", "gitbuddy.timer")
         if success:
-            # QMessageBox.information(self, "Service Control", "GitBuddy periodic service stopped successfully.") # Removed
             pass
         else:
             QMessageBox.warning(self, "Service Control", f"Failed to stop periodic service:\n{stderr}")
@@ -393,6 +458,7 @@ WantedBy=graphical-session.target
             self.uninstall_button.setEnabled(False)
             self.start_service_button.setEnabled(False)
             self.stop_service_button.setEnabled(False)
+            self.force_uninstall_button.setEnabled(True) # Force uninstall is always available if not installed
         else:
             # Check status of the main periodic service
             stdout, stderr, success = self.run_systemctl_command("is-active", "gitbuddy.service", suppress_errors=True)
@@ -419,6 +485,6 @@ WantedBy=graphical-session.target
 
             self.install_button.setEnabled(False)
             self.uninstall_button.setEnabled(True)
+            self.force_uninstall_button.setEnabled(True) # Force uninstall is always available if installed
 
         self.status_label.setText(f"GitBuddy Service Status: <span style='color:{text_color.name()};'>{service_display_text}</span>")
-
