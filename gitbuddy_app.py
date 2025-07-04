@@ -193,3 +193,4 @@ class GitBuddyApp(QMainWindow):
                                     f"The selected directory '{directory}' does not appear to be a Git repository (missing .git folder).")
                 self.global_repo_path_input.clear()
                 self.global_repo_path_changed.emit("")
+
