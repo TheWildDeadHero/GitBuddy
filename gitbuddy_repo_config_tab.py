@@ -350,7 +350,7 @@ class RepoConfigTab(QWidget):
 
         self.repositories_data.append(new_repo_data)
         self._add_repo_to_table(new_repo_data) # Add to table
-        QMessageBox.information(self, "Repository Added", f"Repository '{normalized_path}' added successfully.")
+        # QMessageBox.information(self, "Repository Added", f"Repository '{normalized_path}' added successfully.") # Removed
         
         self.clear_form()
         self.save_configuration()
@@ -384,7 +384,7 @@ class RepoConfigTab(QWidget):
         })
         
         self._update_repo_in_table(selected_row, existing_repo_data) # Update table display
-        QMessageBox.information(self, "Repository Updated", f"Configuration for '{normalized_path}' updated successfully.")
+        # QMessageBox.information(self, "Repository Updated", f"Configuration for '{normalized_path}' updated successfully.") # Removed
         self.save_configuration() # Save changes to file
 
     def remove_selected_repository(self):
@@ -407,7 +407,7 @@ class RepoConfigTab(QWidget):
         self.repo_table_widget.removeRow(selected_row) # Remove row from table
         self.clear_form()
         self.save_configuration()
-        QMessageBox.information(self, "Repository Removed", f"Repository '{selected_path}' removed successfully.")
+        # QMessageBox.information(self, "Repository Removed", f"Repository '{selected_path}' removed successfully.") # Removed
 
 
     def save_configuration(self):
@@ -423,9 +423,10 @@ class RepoConfigTab(QWidget):
         try:
             with open(self.config_file, 'w') as f:
                 json.dump(config_to_save, f, indent=4)
-            QMessageBox.information(self, "Configuration Saved",
-                                    f"Configuration saved successfully to '{self.config_file}'.\n"
-                                    "Remember to restart the GitBuddy service for changes to take full effect.")
+            # QMessageBox.information(self, "Configuration Saved", # Removed
+            #                         f"Configuration saved successfully to '{self.config_file}'.\n"
+            #                         "Remember to restart the GitBuddy service for changes to take full effect.")
             self.repo_config_changed.emit()
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Failed to save configuration: {e}")
+

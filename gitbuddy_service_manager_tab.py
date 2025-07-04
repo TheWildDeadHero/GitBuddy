@@ -168,7 +168,7 @@ class ServiceManagerTab(QWidget):
     def install_all_services(self):
         """Installs (creates and enables) all GitBuddy systemd units."""
         if self.are_all_services_installed():
-            QMessageBox.information(self, "Installation Status", "All GitBuddy services are already installed and enabled.")
+            # QMessageBox.information(self, "Installation Status", "All GitBuddy services are already installed and enabled.") # Removed
             return
 
         python_executable = sys.executable
@@ -362,7 +362,8 @@ WantedBy=graphical-session.target
         # Start the timer unit; it will activate the service
         stdout, stderr, success = self.run_systemctl_command("start", "gitbuddy.timer")
         if success:
-            QMessageBox.information(self, "Service Control", "GitBuddy periodic service started successfully.")
+            # QMessageBox.information(self, "Service Control", "GitBuddy periodic service started successfully.") # Removed
+            pass
         else:
             QMessageBox.warning(self, "Service Control", f"Failed to start periodic service:\n{stderr}")
         self.update_service_status()
@@ -372,7 +373,8 @@ WantedBy=graphical-session.target
         # Stop the timer unit; it will also stop the service it manages
         stdout, stderr, success = self.run_systemctl_command("stop", "gitbuddy.timer")
         if success:
-            QMessageBox.information(self, "Service Control", "GitBuddy periodic service stopped successfully.")
+            # QMessageBox.information(self, "Service Control", "GitBuddy periodic service stopped successfully.") # Removed
+            pass
         else:
             QMessageBox.warning(self, "Service Control", f"Failed to stop periodic service:\n{stderr}")
         self.update_service_status()
@@ -419,3 +421,4 @@ WantedBy=graphical-session.target
             self.uninstall_button.setEnabled(True)
 
         self.status_label.setText(f"GitBuddy Service Status: <span style='color:{text_color.name()};'>{service_display_text}</span>")
+

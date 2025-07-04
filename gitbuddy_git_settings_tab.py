@@ -283,12 +283,12 @@ Host {host_for_config}
                 try:
                     with open(ssh_config_path, 'a') as f:
                         f.write(ssh_config_entry.strip() + "\n\n")
-                    QMessageBox.information(self, "SSH Key Generated & Configured",
-                                            f"Successfully generated new SSH key at:\n'{private_key_path}'\n"
-                                            f"Public key: '{public_key_path}'\n\n"
-                                            f"SSH config updated at '{ssh_config_path}' for host '{host_for_config}'.\n\n"
-                                            "Remember to add the public key to your Git hosting service (e.g., GitHub, GitLab) "
-                                            "and consider adding the private key to your SSH agent.")
+                    # QMessageBox.information(self, "SSH Key Generated & Configured", # Removed
+                    #                         f"Successfully generated new SSH key at:\n'{private_key_path}'\n"
+                    #                         f"Public key: '{public_key_path}'\n\n"
+                    #                         f"SSH config updated at '{ssh_config_path}' for host '{host_for_config}'.\n\n"
+                    #                         "Remember to add the public key to your Git hosting service (e.g., GitHub, GitLab) "
+                    #                         "and consider adding the private key to your SSH agent.")
                 except Exception as config_e:
                     QMessageBox.warning(self, "SSH Config Update Failed",
                                         f"SSH key generated successfully, but failed to update SSH config file '{ssh_config_path}': {config_e}\n"
@@ -489,7 +489,7 @@ class GitSettingsTab(QWidget):
             # Run git --version to check if Git is installed
             subprocess.run(['git', '--version'], check=True, capture_output=True, text=True, timeout=5)
             self.git_installed = True
-            QMessageBox.information(self, "Git Status", "Git is installed on your system.")
+            # QMessageBox.information(self, "Git Status", "Git is installed on your system.") # Removed
             self.load_git_config() # Load config only if Git is installed
         except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
             self.git_installed = False
@@ -571,7 +571,8 @@ class GitSettingsTab(QWidget):
                 stdout, stderr = process.communicate() # Wait for command to complete
 
                 if process.returncode == 0:
-                    QMessageBox.information(self, "Install Git", "Git installation command executed. Please check your terminal for progress and any password prompts.")
+                    # QMessageBox.information(self, "Install Git", "Git installation command executed. Please check your terminal for progress and any password prompts.") # Removed
+                    pass
                 else:
                     QMessageBox.critical(self, "Install Git Failed", f"Git installation command failed with error:\n{stderr}")
             except FileNotFoundError as e:
@@ -667,7 +668,8 @@ class GitSettingsTab(QWidget):
             success, message = self.run_git_command(['config', '--global', 'credential.helper', selected_helper])
         
         if success:
-            QMessageBox.information(self, "Success", f"Git credential helper set to '{selected_helper}' globally.")
+            # QMessageBox.information(self, "Success", f"Git credential helper set to '{selected_helper}' globally.") # Removed
+            pass
         else:
             QMessageBox.critical(self, "Error", f"Failed to set credential helper: {message}")
         self.load_git_config()
@@ -737,10 +739,11 @@ class GitSettingsTab(QWidget):
                     linger_command = ['loginctl', 'enable-linger', current_user]
                     linger_success, linger_message = self.run_command(linger_command)
                     if linger_success:
-                        QMessageBox.information(self, "SSH Agent Started",
-                                                "SSH Agent started successfully for this application session.\n"
-                                                f"Lingering enabled for user '{current_user}'. "
-                                                "This allows background services to use the SSH agent after logout.")
+                        # QMessageBox.information(self, "SSH Agent Started", # Removed
+                        #                         "SSH Agent started successfully for this application session.\n"
+                        #                         f"Lingering enabled for user '{current_user}'. "
+                        #                         "This allows background services to use the SSH agent after logout.")
+                        pass
                     else:
                         QMessageBox.warning(self, "Lingering Error",
                                             f"SSH Agent started, but failed to enable lingering for user '{current_user}': {linger_message}\n"
@@ -782,7 +785,7 @@ class GitSettingsTab(QWidget):
         try:
             success, message = self.run_command(['kill', pid])
             if success:
-                QMessageBox.information(self, "SSH Agent Stopped", f"SSH Agent (PID: {pid}) stopped successfully.")
+                # QMessageBox.information(self, "SSH Agent Stopped", f"SSH Agent (PID: {pid}) stopped successfully.") # Removed
                 del os.environ['SSH_AUTH_SOCK']
                 del os.environ['SSH_AGENT_PID']
             else:
@@ -832,7 +835,8 @@ class GitSettingsTab(QWidget):
 
         success, message = self.run_command(['ssh-add', key_path])
         if success:
-            QMessageBox.information(self, "Success", f"SSH key '{key_path}' added to agent.")
+            # QMessageBox.information(self, "Success", f"SSH key '{key_path}' added to agent.") # Removed
+            pass
         else:
             QMessageBox.critical(self, "Error", f"Failed to add SSH key to agent: {message}\n"
                                  "Ensure SSH agent is running and you have entered your passphrase if prompted in the terminal.")
@@ -867,7 +871,8 @@ class GitSettingsTab(QWidget):
             # If a key was generated, update the last_generated_key_path
             if new_account_data.get('auth_type') == 'SSH Key' and new_account_data.get('ssh_key_path'):
                 self.last_generated_key_path = new_account_data['ssh_key_path']
-            QMessageBox.information(self, "Key Generation Complete", "SSH key generation process finished.")
+            # QMessageBox.information(self, "Key Generation Complete", "SSH key generation process finished.") # Removed
+            pass
         self.load_git_accounts() # Refresh table in case something changed (e.g., if we allowed updating existing entry)
 
 
@@ -906,7 +911,8 @@ class GitSettingsTab(QWidget):
             self.git_accounts_data.append(account_to_save)
             self._add_account_to_table(account_to_save) # Add to UI table
             self.save_git_accounts() # Save to file
-            QMessageBox.information(self, "Account Added", f"Git account for '{username}' on '{host}' added successfully.")
+            # QMessageBox.information(self, "Account Added", f"Git account for '{username}' on '{host}' added successfully.") # Removed
+            pass
         self.load_git_accounts() # Refresh table to show new entry
 
 
@@ -979,7 +985,8 @@ class GitSettingsTab(QWidget):
             os.makedirs(self.config_dir, exist_ok=True)
             with open(self.git_accounts_file, 'w') as f:
                 json.dump(self.git_accounts_data, f, indent=4)
-            QMessageBox.information(self, "Accounts Saved", "Git accounts saved successfully.")
+            # QMessageBox.information(self, "Accounts Saved", "Git accounts saved successfully.") # Removed
+            pass
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Failed to save Git accounts: {e}")
 
@@ -1021,6 +1028,8 @@ class GitSettingsTab(QWidget):
             
             self.accounts_table_widget.removeRow(selected_row_index)
             self.save_git_accounts()
-            QMessageBox.information(self, "Account Removed", f"Git account for '{username_to_remove}' on '{host_to_remove}' removed successfully.")
+            # QMessageBox.information(self, "Account Removed", f"Git account for '{username_to_remove}' on '{host_to_remove}' removed successfully.") # Removed
+            pass
         else:
             QMessageBox.critical(self, "Error", "Could not retrieve selected account data for removal.")
+
