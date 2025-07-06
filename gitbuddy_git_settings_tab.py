@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QComboBox,
     QMessageBox, QGroupBox, QLineEdit, QTableWidget, QTableWidgetItem,
     QHeaderView, QInputDialog, QFileDialog, QDialog, QRadioButton,
-    QButtonGroup, QStackedWidget
+    QButtonGroup, QStackedWidget, QTextEdit, QApplication # Added QTextEdit, QApplication
 )
 from PySide6.QtCore import Qt
 
@@ -18,7 +18,8 @@ class AddAccountDialog(QDialog):
         self.setWindowTitle("Add New Git Account")
         self.config_dir = config_dir
         self.run_command = run_command_func # Pass the utility function
-        self.generated_key_path = None # To store path of newly generated key
+        self.generated_private_key_path = None # To store path of newly generated private key
+        self.generated_public_key_path = None # To store path of newly generated public key
 
         self.init_ui()
 
@@ -166,7 +167,7 @@ class AddAccountDialog(QDialog):
         if self.generate_key_radio.isChecked():
             self.generate_key_options_widget.setVisible(True)
             self.use_existing_key_options_widget.setVisible(False)
-            self.ok_button.setEnabled(self.generated_key_path is not None) # Only OK if key generated
+            self.ok_button.setEnabled(self.generated_private_key_path is not None) # Only OK if key generated
         else: # Use existing key radio is checked
             self.generate_key_options_widget.setVisible(False)
             self.use_existing_key_options_widget.setVisible(True)
@@ -187,7 +188,7 @@ class AddAccountDialog(QDialog):
             self.ok_button.setEnabled(True)
         elif self.auth_type_combobox.currentText() == "SSH Key":
             if self.generate_key_radio.isChecked():
-                self.ok_button.setEnabled(self.generated_key_path is not None and os.path.exists(self.generated_key_path))
+                self.ok_button.setEnabled(self.generated_private_key_path is not None and os.path.exists(self.generated_private_key_path))
             else: # Use existing key
                 self.ok_button.setEnabled(bool(self.existing_key_path_input.text().strip()) and os.path.exists(self.existing_key_path_input.text().strip()))
         else:
@@ -267,7 +268,8 @@ class AddAccountDialog(QDialog):
             success, message = self.run_command(command)
 
             if success:
-                self.generated_key_path = private_key_path # Store the path
+                self.generated_private_key_path = private_key_path # Store the private key path
+                self.generated_public_key_path = public_key_path # Store the public key path
                 os.chmod(private_key_path, 0o600)
                 if os.path.exists(public_key_path):
                     os.chmod(public_key_path, 0o644)
@@ -283,12 +285,6 @@ Host {host_for_config}
                 try:
                     with open(ssh_config_path, 'a') as f:
                         f.write(ssh_config_entry.strip() + "\n\n")
-                    # QMessageBox.information(self, "SSH Key Generated & Configured", # Removed
-                    #                         f"Successfully generated new SSH key at:\n'{private_key_path}'\n"
-                    #                         f"Public key: '{public_key_path}'\n\n"
-                    #                         f"SSH config updated at '{ssh_config_path}' for host '{host_for_config}'.\n\n"
-                    #                         "Remember to add the public key to your Git hosting service (e.g., GitHub, GitLab) "
-                    #                         "and consider adding the private key to your SSH agent.")
                 except Exception as config_e:
                     QMessageBox.warning(self, "SSH Config Update Failed",
                                         f"SSH key generated successfully, but failed to update SSH config file '{ssh_config_path}': {config_e}\n"
@@ -313,9 +309,12 @@ Host {host_for_config}
         }
         if auth_type == "SSH Key":
             if self.generate_key_radio.isChecked():
-                account_data['ssh_key_path'] = self.generated_key_path
+                account_data['ssh_key_path'] = self.generated_private_key_path
+                account_data['public_key_path'] = self.generated_public_key_path
             else:
-                account_data['ssh_key_path'] = self.existing_key_path_input.text().strip()
+                private_key_path = self.existing_key_path_input.text().strip()
+                account_data['ssh_key_path'] = private_key_path
+                account_data['public_key_path'] = private_key_path + ".pub" if private_key_path else None
         return account_data
 
 class GitSettingsTab(QWidget):
@@ -448,6 +447,15 @@ class GitSettingsTab(QWidget):
         account_buttons_layout.addWidget(self.generate_ssh_key_button)
         self.ui_elements_to_disable.append(self.generate_ssh_key_button)
 
+        # New: View/Copy Public Key button
+        self.view_copy_public_key_button = QPushButton("View/Copy Public Key")
+        self.view_copy_public_key_button.clicked.connect(self.view_copy_public_key)
+        self.view_copy_public_key_button.setEnabled(False) # Disabled by default
+        self.accounts_table_widget.itemSelectionChanged.connect(self.update_view_copy_public_key_button_state)
+        account_buttons_layout.addWidget(self.view_copy_public_key_button)
+        self.ui_elements_to_disable.append(self.view_copy_public_key_button)
+
+
         account_buttons_layout.addStretch(1) # Push remove button to the right
 
         # Remove Selected Account button (smaller, anchored right)
@@ -509,6 +517,7 @@ class GitSettingsTab(QWidget):
         self.remove_account_button.setEnabled(
             len(self.accounts_table_widget.selectedIndexes()) > 0
         ) # Remove button doesn't strictly need Git, but usually tied to Git accounts
+        self.update_view_copy_public_key_button_state() # Update this button's state
 
         if self.git_installed:
             self.refresh_install_git_button.setText("Refresh Git Settings")
@@ -571,7 +580,6 @@ class GitSettingsTab(QWidget):
                 stdout, stderr = process.communicate() # Wait for command to complete
 
                 if process.returncode == 0:
-                    # QMessageBox.information(self, "Install Git", "Git installation command executed. Please check your terminal for progress and any password prompts.") # Removed
                     pass
                 else:
                     QMessageBox.critical(self, "Install Git Failed", f"Git installation command failed with error:\n{stderr}")
@@ -668,7 +676,6 @@ class GitSettingsTab(QWidget):
             success, message = self.run_git_command(['config', '--global', 'credential.helper', selected_helper])
         
         if success:
-            # QMessageBox.information(self, "Success", f"Git credential helper set to '{selected_helper}' globally.") # Removed
             pass
         else:
             QMessageBox.critical(self, "Error", f"Failed to set credential helper: {message}")
@@ -739,10 +746,6 @@ class GitSettingsTab(QWidget):
                     linger_command = ['loginctl', 'enable-linger', current_user]
                     linger_success, linger_message = self.run_command(linger_command)
                     if linger_success:
-                        # QMessageBox.information(self, "SSH Agent Started", # Removed
-                        #                         "SSH Agent started successfully for this application session.\n"
-                        #                         f"Lingering enabled for user '{current_user}'. "
-                        #                         "This allows background services to use the SSH agent after logout.")
                         pass
                     else:
                         QMessageBox.warning(self, "Lingering Error",
@@ -785,7 +788,6 @@ class GitSettingsTab(QWidget):
         try:
             success, message = self.run_command(['kill', pid])
             if success:
-                # QMessageBox.information(self, "SSH Agent Stopped", f"SSH Agent (PID: {pid}) stopped successfully.") # Removed
                 del os.environ['SSH_AUTH_SOCK']
                 del os.environ['SSH_AGENT_PID']
             else:
@@ -835,7 +837,6 @@ class GitSettingsTab(QWidget):
 
         success, message = self.run_command(['ssh-add', key_path])
         if success:
-            # QMessageBox.information(self, "Success", f"SSH key '{key_path}' added to agent.") # Removed
             pass
         else:
             QMessageBox.critical(self, "Error", f"Failed to add SSH key to agent: {message}\n"
@@ -871,7 +872,10 @@ class GitSettingsTab(QWidget):
             # If a key was generated, update the last_generated_key_path
             if new_account_data.get('auth_type') == 'SSH Key' and new_account_data.get('ssh_key_path'):
                 self.last_generated_key_path = new_account_data['ssh_key_path']
-            # QMessageBox.information(self, "Key Generation Complete", "SSH key generation process finished.") # Removed
+                # Update the selected account with the new key paths
+                self.git_accounts_data[selected_row_index]['ssh_key_path'] = new_account_data['ssh_key_path']
+                self.git_accounts_data[selected_row_index]['public_key_path'] = new_account_data['public_key_path']
+                self.save_git_accounts() # Save changes
             pass
         self.load_git_accounts() # Refresh table in case something changed (e.g., if we allowed updating existing entry)
 
@@ -891,6 +895,7 @@ class GitSettingsTab(QWidget):
             host = new_account_data['host']
             auth_type = new_account_data['auth_type']
             ssh_key_path = new_account_data.get('ssh_key_path')
+            public_key_path = new_account_data.get('public_key_path') # Get public key path
 
             # Check for duplicates before adding
             if any(acc['username'] == username and acc['host'] == host for acc in self.git_accounts_data):
@@ -906,12 +911,12 @@ class GitSettingsTab(QWidget):
             }
             if auth_type == 'SSH Key':
                 account_to_save['ssh_key_path'] = ssh_key_path
-                self.last_generated_key_path = ssh_key_path # Update last generated key path
+                account_to_save['public_key_path'] = public_key_path # Save public key path
+                self.last_generated_key_path = ssh_key_path # Update last generated private key path
 
             self.git_accounts_data.append(account_to_save)
             self._add_account_to_table(account_to_save) # Add to UI table
             self.save_git_accounts() # Save to file
-            # QMessageBox.information(self, "Account Added", f"Git account for '{username}' on '{host}' added successfully.") # Removed
             pass
         self.load_git_accounts() # Refresh table to show new entry
 
@@ -944,7 +949,8 @@ class GitSettingsTab(QWidget):
                         'email': entry.get('email', ''),
                         'host': entry.get('host', 'Other'),
                         'auth_type': entry.get('auth_type', 'Password'), # Default to Password for old entries
-                        'ssh_key_path': entry.get('ssh_key_path', None)
+                        'ssh_key_path': entry.get('ssh_key_path', None),
+                        'public_key_path': entry.get('public_key_path', None) # Load public key path
                     }
                     if account_data['username'] and account_data['email'] and account_data['host']:
                         self.git_accounts_data.append(account_data)
@@ -970,7 +976,9 @@ class GitSettingsTab(QWidget):
         # Add authentication type and path/obscured text
         auth_display_text = ""
         if account_data.get('auth_type') == "SSH Key":
-            auth_display_text = f"SSH Key: {account_data.get('ssh_key_path', 'N/A')}"
+            # Display private key path, public key view will be via button
+            private_key_display = os.path.basename(account_data.get('ssh_key_path', 'N/A')) if account_data.get('ssh_key_path') else 'N/A'
+            auth_display_text = f"SSH Key ({private_key_display})"
         else: # Default to Password
             auth_display_text = "Password (managed by Git)"
         self.accounts_table_widget.setItem(row_position, 3, QTableWidgetItem(auth_display_text))
@@ -985,7 +993,6 @@ class GitSettingsTab(QWidget):
             os.makedirs(self.config_dir, exist_ok=True)
             with open(self.git_accounts_file, 'w') as f:
                 json.dump(self.git_accounts_data, f, indent=4)
-            # QMessageBox.information(self, "Accounts Saved", "Git accounts saved successfully.") # Removed
             pass
         except Exception as e:
             QMessageBox.critical(self, "Save Error", f"Failed to save Git accounts: {e}")
@@ -1028,8 +1035,80 @@ class GitSettingsTab(QWidget):
             
             self.accounts_table_widget.removeRow(selected_row_index)
             self.save_git_accounts()
-            # QMessageBox.information(self, "Account Removed", f"Git account for '{username_to_remove}' on '{host_to_remove}' removed successfully.") # Removed
             pass
         else:
             QMessageBox.critical(self, "Error", "Could not retrieve selected account data for removal.")
+
+    def update_view_copy_public_key_button_state(self):
+        """Updates the enabled state of the 'View/Copy Public Key' button."""
+        selected_rows = self.accounts_table_widget.selectedIndexes()
+        if not selected_rows:
+            self.view_copy_public_key_button.setEnabled(False)
+            return
+
+        selected_row_index = selected_rows[0].row()
+        if 0 <= selected_row_index < len(self.git_accounts_data):
+            account_data = self.git_accounts_data[selected_row_index]
+            # Enable if it's an SSH Key account and has a public_key_path
+            is_ssh_key_account = account_data.get('auth_type') == 'SSH Key'
+            has_public_key_path = bool(account_data.get('public_key_path'))
+            self.view_copy_public_key_button.setEnabled(is_ssh_key_account and has_public_key_path)
+        else:
+            self.view_copy_public_key_button.setEnabled(False)
+
+    def view_copy_public_key(self):
+        """Displays the public key of the selected account and allows copying it."""
+        if not self.git_installed:
+            QMessageBox.warning(self, "Git Not Installed", "Git is not installed. Cannot view public key.")
+            return
+
+        selected_rows = self.accounts_table_widget.selectedIndexes()
+        if not selected_rows:
+            QMessageBox.information(self, "No Account Selected", "Please select a Git account from the table.")
+            return
+
+        selected_row_index = selected_rows[0].row()
+        account_data = self.git_accounts_data[selected_row_index]
+
+        public_key_path = account_data.get('public_key_path')
+
+        if not public_key_path:
+            QMessageBox.warning(self, "No Public Key", "This account does not have an associated public key path recorded.")
+            return
+        
+        if not os.path.exists(public_key_path):
+            QMessageBox.warning(self, "Public Key Not Found", 
+                                f"Public key file not found at expected path:\n'{public_key_path}'\n"
+                                "It might have been moved or deleted. Please generate a new key or update the account with a valid existing key.")
+            return
+
+        try:
+            with open(public_key_path, 'r') as f:
+                public_key_content = f.read().strip()
+
+            key_dialog = QDialog(self)
+            key_dialog.setWindowTitle(f"Public Key for {account_data['username']}@{account_data['host']}")
+            key_dialog_layout = QVBoxLayout(key_dialog)
+
+            key_dialog_layout.addWidget(QLabel("Copy this public key to your Git hosting service (e.g., GitHub, GitLab settings):"))
+            
+            key_text_edit = QTextEdit()
+            key_text_edit.setReadOnly(True)
+            key_text_edit.setText(public_key_content)
+            key_text_edit.setMinimumHeight(100)
+            key_dialog_layout.addWidget(key_text_edit)
+
+            copy_button = QPushButton("Copy to Clipboard")
+            copy_button.clicked.connect(lambda: QApplication.clipboard().setText(public_key_content))
+            copy_button.clicked.connect(lambda: QMessageBox.information(key_dialog, "Copied!", "Public key copied to clipboard."))
+            key_dialog_layout.addWidget(copy_button)
+
+            close_button = QPushButton("Close")
+            close_button.clicked.connect(key_dialog.accept)
+            key_dialog_layout.addWidget(close_button)
+
+            key_dialog.exec()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error Reading Key", f"Failed to read public key file: {e}")
 
