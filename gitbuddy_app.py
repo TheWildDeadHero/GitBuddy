@@ -115,18 +115,21 @@ class GitBuddyApp(QMainWindow):
         global_pause_layout.setSpacing(15)
 
         self.pause_pull_checkbox = QCheckBox("Pause All Auto Pulls")
+        # Corrected: Use isChecked() to get the boolean state
         self.pause_pull_checkbox.setChecked(self.global_pause_pull)
-        self.pause_pull_checkbox.stateChanged.connect(lambda state: self.set_global_pause('pull', state == Qt.Checked))
+        self.pause_pull_checkbox.stateChanged.connect(lambda: self.set_global_pause('pull', self.pause_pull_checkbox.isChecked()))
         global_pause_layout.addWidget(self.pause_pull_checkbox)
 
         self.pause_commit_checkbox = QCheckBox("Pause All Auto Commits")
+        # Corrected: Use isChecked() to get the boolean state
         self.pause_commit_checkbox.setChecked(self.global_pause_commit)
-        self.pause_commit_checkbox.stateChanged.connect(lambda state: self.set_global_pause('commit', state == Qt.Checked))
+        self.pause_commit_checkbox.stateChanged.connect(lambda: self.set_global_pause('commit', self.pause_commit_checkbox.isChecked()))
         global_pause_layout.addWidget(self.pause_commit_checkbox)
 
         self.pause_push_checkbox = QCheckBox("Pause All Auto Pushes")
+        # Corrected: Use isChecked() to get the boolean state
         self.pause_push_checkbox.setChecked(self.global_pause_push)
-        self.pause_push_checkbox.stateChanged.connect(lambda state: self.set_global_pause('push', state == Qt.Checked))
+        self.pause_push_checkbox.stateChanged.connect(lambda: self.set_global_pause('push', self.pause_push_checkbox.isChecked()))
         global_pause_layout.addWidget(self.pause_push_checkbox)
         
         global_pause_layout.addStretch(1) # Pushes checkboxes to the left
