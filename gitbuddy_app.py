@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout,
     QHBoxLayout, QLabel, QComboBox, QLineEdit, QPushButton, QFileDialog,
-    QMessageBox, QSystemTrayIcon, QMenu, QStyle # Added QStyle import
+    QMessageBox, QSystemTrayIcon, QMenu, QStyle
 )
 from PySide6.QtCore import Qt, QDir, Signal, QTimer
 from PySide6.QtGui import QIcon, QAction
@@ -369,15 +369,16 @@ class GitBuddyApp(QMainWindow):
     def run_git_command(self, repo_path, command_args, timeout=300):
         """
         Helper function to run a git command in a specified repository.
+        Returns (success: bool, output: str, is_auth_error: bool).
         """
         if not os.path.isdir(repo_path):
             logging.error(f"Path is not a directory: {repo_path}. Cannot run git command.")
-            return False, "Not a directory"
+            return False, "Not a directory", False
 
         git_dir = os.path.join(repo_path, ".git")
         if not os.path.isdir(git_dir):
             logging.error(f"Not a Git repository: {repo_path}. Missing .git directory.")
-            return False, "Not a Git repository"
+            return False, "Not a Git repository", False
 
         full_command = ['git'] + command_args
         logging.info(f"Executing '{' '.join(full_command)}' in {repo_path}")
@@ -385,41 +386,77 @@ class GitBuddyApp(QMainWindow):
             result = subprocess.run(
                 full_command,
                 cwd=repo_path,
-                check=True,
+                check=False, # Do not raise CalledProcessError automatically
                 capture_output=True,
                 text=True,
                 timeout=timeout
             )
-            logging.info(f"Command success for {repo_path}: {result.stdout.strip()}")
-            if result.stderr:
-                logging.warning(f"Command for {repo_path} had stderr output:\n{result.stderr.strip()}")
-            return True, result.stdout.strip()
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Command failed for {repo_path}. Error: {e}")
-            logging.error(f"stdout: {e.stdout.strip()}")
-            logging.error(f"stderr: {e.stderr.strip()}")
-            return False, e.stderr.strip()
+            
+            stderr_output = result.stderr.strip()
+            stdout_output = result.stdout.strip()
+
+            # Check for common authentication failure messages in stderr
+            auth_error_keywords = [
+                "authentication failed",
+                "could not read username",
+                "could not read password",
+                "permission denied (publickey)",
+                "fatal: authentication failed",
+                "remote: authentication required",
+                "bad credentials",
+                "no matching private key",
+                "sign_and_send_pubkey: no mutual signature algorithm" # Specific SSH key error
+            ]
+            is_auth_error = any(keyword in stderr_output.lower() for keyword in auth_error_keywords)
+
+            if result.returncode != 0:
+                logging.error(f"Command failed for {repo_path}. Return code: {result.returncode}. Error: {stderr_output}")
+                logging.error(f"stdout: {stdout_output}")
+                return False, stderr_output, is_auth_error
+            
+            logging.info(f"Command success for {repo_path}: {stdout_output}")
+            if stderr_output:
+                logging.warning(f"Command for {repo_path} had stderr output:\n{stderr_output}")
+            return True, stdout_output, False # No authentication error if successful return code
+        
         except FileNotFoundError:
             logging.error("Git command not found. Please ensure Git is installed and in your PATH.")
-            return False, "Git command not found"
+            return False, "Git command not found", False
         except subprocess.TimeoutExpired:
             logging.error(f"Command for {repo_path} timed out after {timeout} seconds.")
-            return False, "Command timed out"
+            return False, "Command timed out", False
         except Exception as e:
             logging.error(f"An unexpected error occurred while running git command in {repo_path}: {e}")
-            return False, str(e)
+            return False, str(e), False
+
+    def handle_git_operation_result(self, repo_path, operation_name, success, message, is_auth_error):
+        """
+        Handles the result of a Git operation, showing appropriate messages and notifications.
+        """
+        repo_base_name = os.path.basename(repo_path)
+        if success:
+            logging.info(f"Successfully {operation_name}d {repo_path}")
+            self.send_notification(f"GitBuddy: {operation_name.capitalize()} Complete", 
+                                   f"Repository: {repo_base_name}\nOperation: {operation_name.capitalize()}")
+        else:
+            logging.error(f"Failed to {operation_name} {repo_path}: {message}")
+            if is_auth_error:
+                QMessageBox.critical(self, f"Authentication Required for {operation_name.capitalize()}",
+                                     f"GitBuddy failed to {operation_name} repository '{repo_base_name}' due to an authentication error.\n\n"
+                                     "Please go to the 'Git Settings' tab to configure your Git credentials or SSH keys for this repository's host.\n\n"
+                                     f"Error details: {message}")
+                self.send_notification(f"GitBuddy: {operation_name.capitalize()} Failed (Auth)", 
+                                       f"Repository: {repo_base_name}\nError: Authentication required. Check Git Settings tab.")
+            else:
+                self.send_notification(f"GitBuddy: {operation_name.capitalize()} Failed", 
+                                       f"Repository: {repo_base_name}\nError: {message}")
+        return success
 
     def pull_repository(self, repo_path):
         """Attempts to perform a 'git pull'."""
         logging.info(f"Attempting to pull repository: {repo_path}")
-        success, message = self.run_git_command(repo_path, ['pull'])
-        if success:
-            logging.info(f"Successfully pulled {repo_path}")
-            self.send_notification("GitBuddy: Pull Complete", f"Repository: {os.path.basename(repo_path)}\nOperation: Pull")
-        else:
-            logging.error(f"Failed to pull {repo_path}: {message}")
-            self.send_notification("GitBuddy: Pull Failed", f"Repository: {os.path.basename(repo_path)}\nError: {message}")
-        return success
+        success, message, is_auth_error = self.run_git_command(repo_path, ['pull'])
+        return self.handle_git_operation_result(repo_path, "pull", success, message, is_auth_error)
 
     def commit_repository(self, repo_path, commit_message_template):
         """
@@ -427,7 +464,7 @@ class GitBuddyApp(QMainWindow):
         Uses a human-readable timestamp in the commit message.
         """
         # First, check if there are any changes to commit
-        success_status, output_status = self.run_git_command(repo_path, ['status', '--porcelain'], timeout=60)
+        success_status, output_status, _ = self.run_git_command(repo_path, ['status', '--porcelain'], timeout=60)
         if not success_status:
             logging.error(f"Failed to get git status for {repo_path}. Skipping commit.")
             self.send_notification("GitBuddy: Commit Failed", f"Repository: {os.path.basename(repo_path)}\nError: Failed to get status.")
@@ -438,7 +475,7 @@ class GitBuddyApp(QMainWindow):
             return False
 
         logging.info(f"Staging changes in {repo_path}...")
-        success_add, message_add = self.run_git_command(repo_path, ['add', '.'])
+        success_add, message_add, _ = self.run_git_command(repo_path, ['add', '.'])
         if not success_add:
             logging.error(f"Failed to stage changes in {repo_path}: {message_add}")
             self.send_notification("GitBuddy: Commit Failed", f"Repository: {os.path.basename(repo_path)}\nError: Failed to stage changes.")
@@ -447,26 +484,15 @@ class GitBuddyApp(QMainWindow):
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         commit_message = commit_message_template.format(timestamp=timestamp)
         logging.info(f"Attempting to commit {repo_path} with message: '{commit_message}'")
-        success_commit, message_commit = self.run_git_command(repo_path, ['commit', '-m', commit_message])
-        if success_commit:
-            logging.info(f"Successfully committed {repo_path}")
-            self.send_notification("GitBuddy: Commit Complete", f"Repository: {os.path.basename(repo_path)}\nOperation: Commit")
-        else:
-            logging.error(f"Failed to commit {repo_path}: {message_commit}")
-            self.send_notification("GitBuddy: Commit Failed", f"Repository: {os.path.basename(repo_path)}\nError: {message_commit}")
-        return success_commit
+        success_commit, message_commit, is_auth_error = self.run_git_command(repo_path, ['commit', '-m', commit_message])
+        # Commit itself usually doesn't need auth, but it's good to pass the flag just in case
+        return self.handle_git_operation_result(repo_path, "commit", success_commit, message_commit, is_auth_error)
 
     def push_repository(self, repo_path):
         """Attempts to perform a 'git push'."""
         logging.info(f"Attempting to push repository: {repo_path}")
-        success, message = self.run_git_command(repo_path, ['push'])
-        if success:
-            logging.info(f"Successfully pushed {repo_path}")
-            self.send_notification("GitBuddy: Push Complete", f"Repository: {os.path.basename(repo_path)}\nOperation: Push")
-        else:
-            logging.error(f"Failed to push {repo_path}: {message}")
-            self.send_notification("GitBuddy: Push Failed", f"Repository: {os.path.basename(repo_path)}\nError: {message}")
-        return success
+        success, message, is_auth_error = self.run_git_command(repo_path, ['push'])
+        return self.handle_git_operation_result(repo_path, "push", success, message, is_auth_error)
 
     def perform_periodic_sync(self):
         """
@@ -536,4 +562,3 @@ class GitBuddyApp(QMainWindow):
                     logging.debug(f"Repository {repo_path} not due for push yet. Next push in {timedelta(seconds=remaining_seconds)}.")
             else:
                 logging.debug(f"Auto-push is disabled for {repo_path}.")
-
