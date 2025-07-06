@@ -382,6 +382,13 @@ class GitBuddyApp(QMainWindow):
 
         full_command = ['git'] + command_args
         logging.info(f"Executing '{' '.join(full_command)}' in {repo_path}")
+        
+        # Create a copy of the current environment variables
+        env = os.environ.copy()
+        # Set GIT_TERMINAL_PROMPT to 0 and GIT_ASKPASS to /bin/true to prevent Git from asking for credentials interactively
+        env['GIT_TERMINAL_PROMPT'] = '0'
+        env['GIT_ASKPASS'] = '/bin/true' # Forces Git to use a non-interactive password helper
+
         try:
             result = subprocess.run(
                 full_command,
@@ -390,7 +397,8 @@ class GitBuddyApp(QMainWindow):
                 capture_output=True,
                 text=True,
                 timeout=timeout,
-                stdin=subprocess.PIPE # Prevent interactive prompts by closing stdin
+                stdin=subprocess.PIPE, # Prevent interactive prompts by closing stdin
+                env=env # Pass the modified environment
             )
             
             stderr_output = result.stderr.strip()
@@ -407,10 +415,12 @@ class GitBuddyApp(QMainWindow):
                 "bad credentials",
                 "no matching private key",
                 "sign_and_send_pubkey: no mutual signature algorithm", # Specific SSH key error
-                "username for", # Direct prompt for username
-                "password for", # Direct prompt for password
+                "username for", # Direct prompt for username (less likely with GIT_ASKPASS)
+                "password for", # Direct prompt for password (less likely with GIT_ASKPASS)
                 "ssh: connect to host", # General SSH connection issue, often auth related
-                "no supported authentication methods available" # SSH auth methods exhausted
+                "no supported authentication methods available", # SSH auth methods exhausted
+                "fatal: could not read from remote repository", # Generic remote repo error, often auth related
+                "fatal: repository not found" # Can sometimes be a disguised auth issue for private repos
             ]
             is_auth_error = any(keyword in stderr_output.lower() for keyword in auth_error_keywords)
 
@@ -448,7 +458,10 @@ class GitBuddyApp(QMainWindow):
             if is_auth_error:
                 QMessageBox.critical(self, f"Authentication Required for {operation_name.capitalize()}",
                                      f"GitBuddy failed to {operation_name} repository '{repo_base_name}' due to an authentication error.\n\n"
-                                     "Please go to the 'Git Settings' tab to configure your Git credentials or SSH keys for this repository's host.\n\n"
+                                     "**The application is configured to suppress interactive Git prompts.**\n\n"
+                                     "To resolve this, please go to the 'Git Settings' tab and:\n"
+                                     "1. Configure a **Credential Helper** (e.g., 'store' or 'manager') to save your username/password.\n"
+                                     "2. Or, set up **SSH Keys** for password-less authentication.\n\n"
                                      f"Error details: {message}")
                 self.send_notification(f"GitBuddy: {operation_name.capitalize()} Failed (Auth)", 
                                        f"Repository: {repo_base_name}\nError: Authentication required. Check Git Settings tab.")
