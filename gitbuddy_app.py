@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout,
     QHBoxLayout, QLabel, QComboBox, QLineEdit, QPushButton, QFileDialog,
-    QMessageBox, QSystemTrayIcon, QMenu, QStyle
+    QMessageBox, QSystemTrayIcon, QMenu, QStyle, QCheckBox, QGroupBox
 )
 from PySide6.QtCore import Qt, QDir, Signal, QTimer
 from PySide6.QtGui import QIcon, QAction
@@ -53,7 +53,12 @@ class GitBuddyApp(QMainWindow):
         self.setWindowIcon(QIcon("icon.png"))
 
         self.repositories_data = [] # Stores the full configuration for each repository
-        self.load_configured_repos_data() # Load initial repo data for auto functions
+        # Global pause flags, initialized to False (not paused)
+        self.global_pause_pull = False
+        self.global_pause_commit = False
+        self.global_pause_push = False
+
+        self.load_configured_repos_data() # Load initial repo data and global settings
 
         self.init_ui()
         self.setup_tray_icon()
@@ -103,6 +108,32 @@ class GitBuddyApp(QMainWindow):
         main_layout.addLayout(repo_selection_layout)
         # --- End Global Repository Selection UI ---
 
+        # --- Global Pause Controls ---
+        global_pause_group = QGroupBox("Global Auto-Sync Pause Controls")
+        global_pause_layout = QHBoxLayout(global_pause_group)
+        global_pause_layout.setContentsMargins(10, 10, 10, 10)
+        global_pause_layout.setSpacing(15)
+
+        self.pause_pull_checkbox = QCheckBox("Pause All Auto Pulls")
+        self.pause_pull_checkbox.setChecked(self.global_pause_pull)
+        self.pause_pull_checkbox.stateChanged.connect(lambda state: self.set_global_pause('pull', state == Qt.Checked))
+        global_pause_layout.addWidget(self.pause_pull_checkbox)
+
+        self.pause_commit_checkbox = QCheckBox("Pause All Auto Commits")
+        self.pause_commit_checkbox.setChecked(self.global_pause_commit)
+        self.pause_commit_checkbox.stateChanged.connect(lambda state: self.set_global_pause('commit', state == Qt.Checked))
+        global_pause_layout.addWidget(self.pause_commit_checkbox)
+
+        self.pause_push_checkbox = QCheckBox("Pause All Auto Pushes")
+        self.pause_push_checkbox.setChecked(self.global_pause_push)
+        self.pause_push_checkbox.stateChanged.connect(lambda state: self.set_global_pause('push', state == Qt.Checked))
+        global_pause_layout.addWidget(self.pause_push_checkbox)
+        
+        global_pause_layout.addStretch(1) # Pushes checkboxes to the left
+
+        main_layout.addWidget(global_pause_group)
+        # --- End Global Pause Controls ---
+
         self.tab_widget = QTabWidget()
         main_layout.addWidget(self.tab_widget)
 
@@ -111,7 +142,6 @@ class GitBuddyApp(QMainWindow):
         self.repo_config_tab = RepoConfigTab(CONFIG_DIR)
         self.merge_tab = MergeTab()
         self.bisect_tab = BisectTab()
-        # self.service_manager_tab = ServiceManagerTab(CONFIG_DIR) # REMOVED
         self.git_settings_tab = GitSettingsTab(CONFIG_DIR)
 
         # Connect the global signal to each tab's update method
@@ -130,7 +160,6 @@ class GitBuddyApp(QMainWindow):
         self.tab_widget.addTab(self.merge_tab, "Merge")
         self.tab_widget.addTab(self.bisect_tab, "Bisect")
         self.tab_widget.addTab(self.git_settings_tab, "Git Settings")
-        # self.tab_widget.addTab(self.service_manager_tab, "Service Manager") # REMOVED
 
     def setup_tray_icon(self):
         """Sets up the system tray icon and its context menu."""
@@ -142,18 +171,45 @@ class GitBuddyApp(QMainWindow):
         self.tray_icon.setToolTip("GitBuddy: Auto Git Sync")
 
         # Create context menu
-        tray_menu = QMenu()
+        self.tray_menu = QMenu()
+        self.tray_menu.aboutToShow.connect(self.update_tray_menu_state) # Connect to update state before showing
+
+        # Add actions to the tray menu
         show_hide_action = QAction("Show/Hide GitBuddy", self)
         show_hide_action.triggered.connect(self.show_hide_window)
-        tray_menu.addAction(show_hide_action)
+        self.tray_menu.addAction(show_hide_action)
+        self.tray_menu.addSeparator()
+
+        # Global Pause Actions
+        self.action_pause_pull = QAction("Pause All Auto Pulls", self)
+        self.action_pause_pull.setCheckable(True)
+        self.action_pause_pull.triggered.connect(lambda checked: self.set_global_pause('pull', checked))
+        self.tray_menu.addAction(self.action_pause_pull)
+
+        self.action_pause_commit = QAction("Pause All Auto Commits", self)
+        self.action_pause_commit.setCheckable(True)
+        self.action_pause_commit.triggered.connect(lambda checked: self.set_global_pause('commit', checked))
+        self.tray_menu.addAction(self.action_pause_commit)
+
+        self.action_pause_push = QAction("Pause All Auto Pushes", self)
+        self.action_pause_push.setCheckable(True)
+        self.action_pause_push.triggered.connect(lambda checked: self.set_global_pause('push', checked))
+        self.tray_menu.addAction(self.action_pause_push)
+        self.tray_menu.addSeparator()
 
         exit_action = QAction("Exit GitBuddy", self)
         exit_action.triggered.connect(self.exit_application)
-        tray_menu.addAction(exit_action)
+        self.tray_menu.addAction(exit_action)
 
-        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.setContextMenu(self.tray_menu)
         self.tray_icon.activated.connect(self.on_tray_icon_activated) # For double-click
         self.tray_icon.show()
+
+    def update_tray_menu_state(self):
+        """Updates the checked state of the pause menu items before the tray menu is shown."""
+        self.action_pause_pull.setChecked(self.global_pause_pull)
+        self.action_pause_commit.setChecked(self.global_pause_commit)
+        self.action_pause_push.setChecked(self.global_pause_push)
 
     def on_tray_icon_activated(self, reason):
         """Handles activation of the tray icon (e.g., double-click)."""
@@ -207,7 +263,12 @@ class GitBuddyApp(QMainWindow):
         if os.path.exists(CONFIG_FILE):
             try:
                 with open(CONFIG_FILE, 'r') as f:
-                    repos_config = json.load(f)
+                    full_config = json.load(f)
+                    # If the loaded config is a list (old format), wrap it in a dictionary
+                    if isinstance(full_config, list):
+                        full_config = {'repositories': full_config}
+                    
+                    repos_config = full_config.get('repositories', [])
                     if isinstance(repos_config, list):
                         for entry in repos_config:
                             if isinstance(entry, dict) and 'path' in entry:
@@ -289,10 +350,58 @@ class GitBuddyApp(QMainWindow):
                 self.global_repo_path_input.clear()
                 self.global_repo_path_changed.emit("")
 
+    def set_global_pause(self, task_type, paused):
+        """Sets the global pause state for a specific task type and saves it."""
+        if task_type == 'pull':
+            self.global_pause_pull = paused
+            self.pause_pull_checkbox.setChecked(paused) # Update GUI checkbox
+        elif task_type == 'commit':
+            self.global_pause_commit = paused
+            self.pause_commit_checkbox.setChecked(paused) # Update GUI checkbox
+        elif task_type == 'push':
+            self.global_pause_push = paused
+            self.pause_push_checkbox.setChecked(paused) # Update GUI checkbox
+        self.save_global_config()
+        logging.info(f"Global pause for {task_type} set to {paused}.")
+
+    def save_global_config(self):
+        """Saves the global pause settings to the configuration file."""
+        current_config = {}
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, 'r') as f:
+                    loaded_config = json.load(f)
+                    # If the loaded config is a list (old format), convert it to a dictionary
+                    if isinstance(loaded_config, list):
+                        current_config['repositories'] = loaded_config
+                    else:
+                        current_config = loaded_config
+            except json.JSONDecodeError:
+                logging.warning(f"Could not load existing config from {CONFIG_FILE}. Starting with empty config for global settings save.")
+                current_config = {}
+        
+        current_config['global_pause_pull'] = self.global_pause_pull
+        current_config['global_pause_commit'] = self.global_pause_commit
+        current_config['global_pause_push'] = self.global_pause_push
+
+        # Ensure repositories data is preserved if it exists
+        # This line is slightly redundant now that 'repositories' is handled above,
+        # but keeps existing structure if other keys were present.
+        if 'repositories' not in current_config:
+            current_config['repositories'] = [] # Initialize if not present
+
+        try:
+            with open(CONFIG_FILE, 'w') as f:
+                json.dump(current_config, f, indent=4)
+            logging.info("Global pause settings saved.")
+        except Exception as e:
+            logging.error(f"Failed to save global pause settings: {e}")
+
     # --- Integrated Auto Functions ---
     def load_configured_repos_data(self):
         """
-        Loads the list of Git repository configurations from the configuration file.
+        Loads the list of Git repository configurations from the configuration file,
+        including global pause settings.
         Initializes 'last_pulled_at', 'last_committed_at', and 'last_pushed_at' for internal tracking.
         Converts intervals from minutes to seconds.
         Returns an empty list if the file does not exist or is malformed.
@@ -304,9 +413,30 @@ class GitBuddyApp(QMainWindow):
 
         try:
             with open(CONFIG_FILE, 'r') as f:
-                repos_config = json.load(f)
+                full_config = json.load(f)
+                # If the loaded config is a list (old format), wrap it in a dictionary
+                if isinstance(full_config, list):
+                    full_config = {'repositories': full_config}
+
+                if not isinstance(full_config, dict):
+                    logging.error(f"Configuration file {CONFIG_FILE} is malformed. Expected a dictionary or list.")
+                    self.repositories_data = []
+                    return
+
+                # Load global pause settings
+                self.global_pause_pull = full_config.get('global_pause_pull', False)
+                self.global_pause_commit = full_config.get('global_pause_commit', False)
+                self.global_pause_push = full_config.get('global_pause_push', False)
+
+                # Update UI checkboxes if they exist (will be called before init_ui for initial load)
+                if hasattr(self, 'pause_pull_checkbox'):
+                    self.pause_pull_checkbox.setChecked(self.global_pause_pull)
+                    self.pause_commit_checkbox.setChecked(self.global_pause_commit)
+                    self.pause_push_checkbox.setChecked(self.global_pause_push)
+
+                repos_config = full_config.get('repositories', [])
                 if not isinstance(repos_config, list):
-                    logging.error(f"Configuration file {CONFIG_FILE} is malformed. Expected a list.")
+                    logging.error(f"Repositories section in {CONFIG_FILE} is malformed. Expected a list.")
                     self.repositories_data = []
                     return
 
@@ -540,7 +670,8 @@ class GitBuddyApp(QMainWindow):
             current_time = datetime.now()
 
             # --- Pull Logic ---
-            if repo_data['auto_pull']:
+            # Check global pause for pull and individual auto_pull setting
+            if not self.global_pause_pull and repo_data['auto_pull']:
                 pull_interval_seconds = repo_data['pull_interval']
                 last_pulled = repo_data['last_pulled_at']
                 time_since_last_pull = current_time - last_pulled
@@ -553,10 +684,14 @@ class GitBuddyApp(QMainWindow):
                     remaining_seconds = pull_interval_seconds - time_since_last_pull.total_seconds()
                     logging.debug(f"Repository {repo_path} not due for pull yet. Next pull in {timedelta(seconds=remaining_seconds)}.")
             else:
-                logging.debug(f"Auto-pull is disabled for {repo_path}.")
+                if self.global_pause_pull:
+                    logging.debug(f"Auto-pull is globally paused. Skipping for {repo_path}.")
+                else:
+                    logging.debug(f"Auto-pull is disabled for {repo_path}.")
 
             # --- Commit Logic ---
-            if repo_data['auto_commit']:
+            # Check global pause for commit and individual auto_commit setting
+            if not self.global_pause_commit and repo_data['auto_commit']:
                 commit_interval_seconds = repo_data['commit_interval']
                 last_committed = repo_data['last_committed_at']
                 time_since_last_committed = current_time - last_committed
@@ -570,10 +705,14 @@ class GitBuddyApp(QMainWindow):
                     remaining_seconds = commit_interval_seconds - time_since_last_committed.total_seconds()
                     logging.debug(f"Repository {repo_path} not due for commit yet. Next commit in {timedelta(seconds=remaining_seconds)}.")
             else:
-                logging.debug(f"Auto-commit is disabled for {repo_path}.")
+                if self.global_pause_commit:
+                    logging.debug(f"Auto-commit is globally paused. Skipping for {repo_path}.")
+                else:
+                    logging.debug(f"Auto-commit is disabled for {repo_path}.")
 
             # --- Push Logic ---
-            if repo_data['auto_push']:
+            # Check global pause for push and individual auto_push setting
+            if not self.global_pause_push and repo_data['auto_push']:
                 push_interval_seconds = repo_data['push_interval']
                 last_pushed = repo_data['last_pushed_at']
                 time_since_last_push = current_time - last_pushed
@@ -586,4 +725,7 @@ class GitBuddyApp(QMainWindow):
                     remaining_seconds = push_interval_seconds - time_since_last_push.total_seconds()
                     logging.debug(f"Repository {repo_path} not due for push yet. Next push in {timedelta(seconds=remaining_seconds)}.")
             else:
-                logging.debug(f"Auto-push is disabled for {repo_path}.")
+                if self.global_pause_push:
+                    logging.debug(f"Auto-push is globally paused. Skipping for {repo_path}.")
+                else:
+                    logging.debug(f"Auto-push is disabled for {repo_path}.")
