@@ -47,6 +47,11 @@ class GitBuddyApp(QMainWindow):
         self.setWindowTitle("GitBuddy")
         self.setGeometry(100, 100, 900, 750) # Adjusted size for tabbed interface
 
+        # Set the application icon
+        # Ensure 'icon.png' is in the same directory as this script,
+        # or provide a full path to the icon file.
+        self.setWindowIcon(QIcon("icon.png"))
+
         self.repositories_data = [] # Stores the full configuration for each repository
         self.load_configured_repos_data() # Load initial repo data for auto functions
 
@@ -130,8 +135,10 @@ class GitBuddyApp(QMainWindow):
     def setup_tray_icon(self):
         """Sets up the system tray icon and its context menu."""
         self.tray_icon = QSystemTrayIcon(self)
-        # Use a generic icon or provide a custom one if available
-        self.tray_icon.setIcon(self.style().standardIcon(QStyle.SP_ComputerIcon)) # Example icon
+        # Set the tray icon
+        # Ensure 'icon.png' is in the same directory as this script,
+        # or provide a full path to the icon file.
+        self.tray_icon.setIcon(QIcon("icon.png"))
         self.tray_icon.setToolTip("GitBuddy: Auto Git Sync")
 
         # Create context menu
