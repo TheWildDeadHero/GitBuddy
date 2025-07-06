@@ -389,7 +389,8 @@ class GitBuddyApp(QMainWindow):
                 check=False, # Do not raise CalledProcessError automatically
                 capture_output=True,
                 text=True,
-                timeout=timeout
+                timeout=timeout,
+                stdin=subprocess.PIPE # Prevent interactive prompts by closing stdin
             )
             
             stderr_output = result.stderr.strip()
@@ -405,7 +406,11 @@ class GitBuddyApp(QMainWindow):
                 "remote: authentication required",
                 "bad credentials",
                 "no matching private key",
-                "sign_and_send_pubkey: no mutual signature algorithm" # Specific SSH key error
+                "sign_and_send_pubkey: no mutual signature algorithm", # Specific SSH key error
+                "username for", # Direct prompt for username
+                "password for", # Direct prompt for password
+                "ssh: connect to host", # General SSH connection issue, often auth related
+                "no supported authentication methods available" # SSH auth methods exhausted
             ]
             is_auth_error = any(keyword in stderr_output.lower() for keyword in auth_error_keywords)
 
