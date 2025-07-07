@@ -25,6 +25,7 @@ from gitbuddy_git_settings_tab import GitSettingsTab
 # Define the base configuration directory
 CONFIG_DIR = os.path.expanduser("~/.config/git-buddy")
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
+GIT_ACCOUNTS_FILE = os.path.join(CONFIG_DIR, "git_accounts.json") # Define git_accounts.json path
 LOG_FILE = os.path.join(CONFIG_DIR, "git_buddy.log") # Log file for integrated functions
 os.makedirs(CONFIG_DIR, exist_ok=True) # Ensure it exists
 
@@ -53,16 +54,32 @@ class GitBuddyApp(QMainWindow):
         self.setWindowIcon(QIcon("icon.png"))
 
         self.repositories_data = [] # Stores the full configuration for each repository
+        self.git_accounts_data = [] # Initialize git_accounts_data here
         # Global pause flags, initialized to False (not paused)
         self.global_pause_pull = False
         self.global_pause_commit = False
         self.global_pause_push = False
+        self.auto_start_ssh_agent = False # Initialize auto_start_ssh_agent
 
         self.load_configured_repos_data() # Load initial repo data and global settings
+        self.load_git_accounts_data() # Load Git accounts data
 
         self.init_ui()
         self.setup_tray_icon()
         self.load_configured_repos_to_selector() # Load repos into the dropdown on startup
+
+        # After init_ui, ensure the SSH agent state reflects the loaded setting
+        if self.auto_start_ssh_agent:
+            # Only attempt to start if GitSettingsTab is initialized and git is installed
+            if hasattr(self, 'git_settings_tab') and self.git_settings_tab.git_installed:
+                self.git_settings_tab.start_ssh_agent()
+            else:
+                logging.warning("Auto-start SSH agent enabled, but GitSettingsTab not ready or Git not installed.")
+        else:
+            # If auto-start is disabled, ensure agent is stopped on startup
+            if hasattr(self, 'git_settings_tab') and self.git_settings_tab.git_installed:
+                self.git_settings_tab.stop_ssh_agent()
+
 
         # Setup periodic sync timer
         self.periodic_sync_timer = QTimer(self)
@@ -145,7 +162,8 @@ class GitBuddyApp(QMainWindow):
         self.repo_config_tab = RepoConfigTab(CONFIG_DIR)
         self.merge_tab = MergeTab()
         self.bisect_tab = BisectTab()
-        self.git_settings_tab = GitSettingsTab(CONFIG_DIR)
+        # Pass initial git_accounts_data and auto_start_ssh_agent to GitSettingsTab
+        self.git_settings_tab = GitSettingsTab(CONFIG_DIR, self.git_accounts_data, self.auto_start_ssh_agent)
 
         # Connect the global signal to each tab's update method
         self.global_repo_path_changed.connect(self.current_branch_tab.set_selected_repo_path)
@@ -156,6 +174,13 @@ class GitBuddyApp(QMainWindow):
         # Connect RepoConfigTab's signal to refresh the global combobox AND the internal repo data
         self.repo_config_tab.repo_config_changed.connect(self.load_configured_repos_to_selector)
         self.repo_config_tab.repo_config_changed.connect(self.load_configured_repos_data) # Refresh internal data
+        # Connect GitSettingsTab's signal to refresh Git accounts data in GitBuddyApp
+        self.git_settings_tab.git_accounts_changed.connect(self.load_git_accounts_data)
+
+
+        # Connect GitSettingsTab's auto_start_ssh_agent_setting_changed signal
+        self.git_settings_tab.auto_start_ssh_agent_setting_changed.connect(self.set_auto_start_ssh_agent)
+
 
         # Add tabs to the QTabWidget in the specified order
         self.tab_widget.addTab(self.current_branch_tab, "Current Branch")
@@ -197,7 +222,7 @@ class GitBuddyApp(QMainWindow):
         self.action_pause_push = QAction("Pause All Auto Pushes", self)
         self.action_pause_push.setCheckable(True)
         self.action_pause_push.triggered.connect(lambda checked: self.set_global_pause('push', checked))
-        self.tray_menu.addAction(self.action_pause_push)
+        self.tray_menu.addAction(self.action_pause_push) # Corrected typo: changed self.action_push_action to self.action_pause_push
         self.tray_menu.addSeparator()
 
         exit_action = QAction("Exit GitBuddy", self)
@@ -233,11 +258,17 @@ class GitBuddyApp(QMainWindow):
                                      "Are you sure you want to exit GitBuddy?\n"
                                      "Automatic sync functions will stop.",
                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        if reply == QMessageBox.Yes:
-            self.tray_icon.hide() # Hide tray icon before quitting
-            QApplication.quit()
-        else:
-            pass # Do nothing if user cancels
+        if reply == QMessageBox.No:
+            return
+        
+        # Stop SSH Agent if it was auto-started and is running
+        if self.auto_start_ssh_agent and self.git_settings_tab.git_installed:
+            # Check if agent is actually running before attempting to stop
+            if "SSH_AUTH_SOCK" in os.environ and os.path.exists(os.environ["SSH_AUTH_SOCK"]):
+                self.git_settings_tab.stop_ssh_agent()
+
+        self.tray_icon.hide() # Hide tray icon before quitting
+        QApplication.quit()
 
     def closeEvent(self, event):
         """Overrides the close event to minimize to tray."""
@@ -367,8 +398,27 @@ class GitBuddyApp(QMainWindow):
         self.save_global_config()
         logging.info(f"Global pause for {task_type} set to {paused}.")
 
+    def set_auto_start_ssh_agent(self, enable: bool):
+        """
+        Slot to handle the auto-start SSH agent setting change from GitSettingsTab.
+        Updates the global setting and triggers SSH agent start/stop if applicable.
+        """
+        logging.info(f"Received auto-start SSH agent setting: {enable}")
+        self.auto_start_ssh_agent = enable
+        self.save_global_config() # Save the updated setting
+
+        # Now, instruct the GitSettingsTab to manage the SSH agent based on this setting
+        # This ensures the GitSettingsTab's internal logic for starting/stopping is used.
+        if enable:
+            # If auto-start is enabled, and Git is installed, try to start the agent
+            if self.git_settings_tab.git_installed:
+                self.git_settings_tab.start_ssh_agent()
+        else:
+            # If auto-start is disabled, stop the agent
+            self.git_settings_tab.stop_ssh_agent()
+
     def save_global_config(self):
-        """Saves the global pause settings to the configuration file."""
+        """Saves the global pause settings and auto_start_ssh_agent to the configuration file."""
         current_config = {}
         if os.path.exists(CONFIG_FILE):
             try:
@@ -386,6 +436,7 @@ class GitBuddyApp(QMainWindow):
         current_config['global_pause_pull'] = self.global_pause_pull
         current_config['global_pause_commit'] = self.global_pause_commit
         current_config['global_pause_push'] = self.global_pause_push
+        current_config['auto_start_ssh_agent'] = self.auto_start_ssh_agent # Save this setting
 
         # Ensure repositories data is preserved if it exists
         # This line is slightly redundant now that 'repositories' is handled above,
@@ -396,15 +447,48 @@ class GitBuddyApp(QMainWindow):
         try:
             with open(CONFIG_FILE, 'w') as f:
                 json.dump(current_config, f, indent=4)
-            logging.info("Global pause settings saved.")
+            logging.info("Global pause settings and auto_start_ssh_agent saved.")
         except Exception as e:
             logging.error(f"Failed to save global pause settings: {e}")
+
+    def load_git_accounts_data(self):
+        """
+        Loads Git account data from the git_accounts.json file.
+        Initializes self.git_accounts_data to an empty list if the file does not exist or is malformed.
+        """
+        self.git_accounts_data = [] # Reset to empty before loading
+
+        if not os.path.exists(GIT_ACCOUNTS_FILE):
+            logging.info(f"Git accounts file not found: {GIT_ACCOUNTS_FILE}. Initializing empty list.")
+            return
+
+        try:
+            with open(GIT_ACCOUNTS_FILE, 'r') as f:
+                accounts_config = json.load(f)
+                if not isinstance(accounts_config, list):
+                    logging.warning(f"Git accounts file '{GIT_ACCOUNTS_FILE}' is malformed. Expected a list of objects.")
+                    return # Keep self.git_accounts_data as empty list
+                
+                for entry in accounts_config:
+                    # Basic validation for an account entry
+                    if isinstance(entry, dict) and 'username' in entry and 'host' in entry:
+                        self.git_accounts_data.append(entry)
+                    else:
+                        logging.warning(f"Skipping malformed or incomplete Git account entry in config file: {entry}")
+            logging.info(f"Loaded {len(self.git_accounts_data)} Git accounts.")
+        except json.JSONDecodeError:
+            logging.warning(f"Error decoding JSON from {GIT_ACCOUNTS_FILE}. File might be corrupted. Initializing empty list.")
+            self.git_accounts_data = [] # Ensure it's empty on JSON error
+        except Exception as e:
+            logging.error(f"An unexpected error occurred while loading Git accounts: {e}")
+            self.git_accounts_data = [] # Ensure it's empty on other errors
+
 
     # --- Integrated Auto Functions ---
     def load_configured_repos_data(self):
         """
         Loads the list of Git repository configurations from the configuration file,
-        including global pause settings.
+        including global pause settings and auto_start_ssh_agent.
         Initializes 'last_pulled_at', 'last_committed_at', and 'last_pushed_at' for internal tracking.
         Converts intervals from minutes to seconds.
         Returns an empty list if the file does not exist or is malformed.
@@ -412,6 +496,11 @@ class GitBuddyApp(QMainWindow):
         if not os.path.exists(CONFIG_FILE):
             logging.warning(f"Configuration file not found: {CONFIG_FILE}. Initializing empty list.")
             self.repositories_data = []
+            # Initialize global settings to default if config file doesn't exist
+            self.global_pause_pull = False
+            self.global_pause_commit = False
+            self.global_pause_push = False
+            self.auto_start_ssh_agent = False
             return
 
         try:
@@ -424,18 +513,30 @@ class GitBuddyApp(QMainWindow):
                 if not isinstance(full_config, dict):
                     logging.error(f"Configuration file {CONFIG_FILE} is malformed. Expected a dictionary or list.")
                     self.repositories_data = []
+                    # Reset global settings to default on malformed config
+                    self.global_pause_pull = False
+                    self.global_pause_commit = False
+                    self.global_pause_push = False
+                    self.auto_start_ssh_agent = False
                     return
 
                 # Load global pause settings
                 self.global_pause_pull = full_config.get('global_pause_pull', False)
                 self.global_pause_commit = full_config.get('global_pause_commit', False)
                 self.global_pause_push = full_config.get('global_pause_push', False)
+                # Load auto_start_ssh_agent setting
+                self.auto_start_ssh_agent = full_config.get('auto_start_ssh_agent', False)
 
-                # Update UI checkboxes if they exist (will be called before init_ui for initial load)
+
+                # Update UI checkboxes if they exist (will be called before init_ui for initial load,
+                # so these might not exist yet. The init_ui will set them based on self.global_pause_X and self.auto_start_ssh_agent)
                 if hasattr(self, 'pause_pull_checkbox'):
                     self.pause_pull_checkbox.setChecked(self.global_pause_pull)
+                if hasattr(self, 'pause_commit_checkbox'):
                     self.pause_commit_checkbox.setChecked(self.global_pause_commit)
+                if hasattr(self, 'pause_push_checkbox'):
                     self.pause_push_checkbox.setChecked(self.global_pause_push)
+                # The GitSettingsTab's checkbox will be set in its own __init__ using the passed initial value.
 
                 repos_config = full_config.get('repositories', [])
                 if not isinstance(repos_config, list):
@@ -486,9 +587,19 @@ class GitBuddyApp(QMainWindow):
         except json.JSONDecodeError as e:
             logging.error(f"Error decoding JSON from {CONFIG_FILE}: {e}")
             self.repositories_data = []
+            # Reset global settings to default on JSON error
+            self.global_pause_pull = False
+            self.global_pause_commit = False
+            self.global_pause_push = False
+            self.auto_start_ssh_agent = False
         except Exception as e:
             logging.error(f"An unexpected error occurred while loading config for auto functions: {e}")
             self.repositories_data = []
+            # Reset global settings to default on other errors
+            self.global_pause_pull = False
+            self.global_pause_commit = False
+            self.global_pause_push = False
+            self.auto_start_ssh_agent = False
 
     def send_notification(self, title, message):
         """

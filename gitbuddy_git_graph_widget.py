@@ -40,7 +40,7 @@ class GitGraphWidget(QWidget):
             y_pos += self.COMMIT_SPACING_Y
         
         self.setMinimumHeight(int(y_pos))
-        self.setMaximumHeight(int(y_pos))
+        # Removed self.setMaximumHeight(int(y_pos)) to allow the widget to grow and be scrolled
 
     def paintEvent(self, event):
         """Draws the Git graph."""

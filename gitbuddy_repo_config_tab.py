@@ -387,6 +387,7 @@ class RepoConfigTab(QWidget):
         """Helper to add a single repository's data to the QTableWidget."""
         row_position = self.repo_table_widget.rowCount()
         self.repo_table_widget.insertRow(row_position)
+        # Removed the problematic line: self.repo_table_widget.setItem(row_position, 0, QTableWidgetItem(repo_data['path']))
         self._update_table_row_from_data(row_position, repo_data)
 
     def _update_table_row_from_data(self, row, repo_data):
