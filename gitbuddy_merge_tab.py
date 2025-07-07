@@ -1,13 +1,13 @@
 # gitbuddy_merge_tab.py
 
-import os # Added for path validation
+import os
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QLabel
 from PySide6.QtCore import Qt
 
 class MergeTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.current_selected_repo_path = "" # To store the path from the global selector
+        self.current_selected_repo_path = ""
         self.init_ui()
 
     def init_ui(self):
@@ -29,8 +29,6 @@ class MergeTab(QWidget):
         self.current_selected_repo_path = path
         if path and os.path.isdir(os.path.join(path, ".git")):
             self.repo_path_label.setText(f"Selected Repository: {path}")
-            # Here you would typically enable/disable merge-related UI elements
-            # and load relevant merge data for this repository.
         else:
             self.repo_path_label.setText("Selected Repository: N/A (Not a Git Repo or No Selection)")
-            # Disable merge-related UI elements
+

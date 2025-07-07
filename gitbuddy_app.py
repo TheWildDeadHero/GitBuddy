@@ -21,11 +21,12 @@ from gitbuddy_current_branch_tab import CurrentBranchTab
 from gitbuddy_merge_tab import MergeTab
 from gitbuddy_bisect_tab import BisectTab
 from gitbuddy_git_settings_tab import GitSettingsTab
+# Removed: from gitbuddy_service_manager_tab import ServiceManagerTab
 
 # Define the base configuration directory
 CONFIG_DIR = os.path.expanduser("~/.config/git-buddy")
-CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
-GIT_ACCOUNTS_FILE = os.path.join(CONFIG_DIR, "git_accounts.json") # Define git_accounts.json path
+MAIN_CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json") # Main config for repos and global settings
+GIT_ACCOUNTS_FILE = os.path.join(CONFIG_DIR, "git_accounts.json") # Git accounts config file
 LOG_FILE = os.path.join(CONFIG_DIR, "git_buddy.log") # Log file for integrated functions
 os.makedirs(CONFIG_DIR, exist_ok=True) # Ensure it exists
 
@@ -40,8 +41,10 @@ logging.basicConfig(
 )
 
 class GitBuddyApp(QMainWindow):
-    # Define a signal that will be emitted when the global repository path changes
+    # Define signals that will be emitted when global data changes
     global_repo_path_changed = Signal(str)
+    repo_data_updated = Signal(list) # Signal to notify tabs when repo data changes
+    git_accounts_data_updated = Signal(list) # Signal to notify tabs when git accounts data changes
 
     def __init__(self):
         super().__init__()
@@ -49,44 +52,36 @@ class GitBuddyApp(QMainWindow):
         self.setGeometry(100, 100, 900, 750) # Adjusted size for tabbed interface
 
         # Set the application icon
-        # Ensure 'icon.png' is in the same directory as this script,
-        # or provide a full path to the icon file.
         self.setWindowIcon(QIcon("icon.png"))
 
+        # Initialize data structures
         self.repositories_data = [] # Stores the full configuration for each repository
-        self.git_accounts_data = [] # Initialize git_accounts_data here
-        # Global pause flags, initialized to False (not paused)
+        self.git_accounts_data = [] # Stores configured Git accounts
         self.global_pause_pull = False
         self.global_pause_commit = False
         self.global_pause_push = False
-        self.auto_start_ssh_agent = False # Initialize auto_start_ssh_agent
+        self.auto_start_ssh_agent = False
 
-        self.load_configured_repos_data() # Load initial repo data and global settings
-        self.load_git_accounts_data() # Load Git accounts data
+        # Load all configurations on startup
+        self.load_all_configurations()
 
         self.init_ui()
         self.setup_tray_icon()
         self.load_configured_repos_to_selector() # Load repos into the dropdown on startup
 
         # After init_ui, ensure the SSH agent state reflects the loaded setting
+        # This needs to be done after git_settings_tab is initialized
         if self.auto_start_ssh_agent:
-            # Only attempt to start if GitSettingsTab is initialized and git is installed
             if hasattr(self, 'git_settings_tab') and self.git_settings_tab.git_installed:
                 self.git_settings_tab.start_ssh_agent()
             else:
                 logging.warning("Auto-start SSH agent enabled, but GitSettingsTab not ready or Git not installed.")
         else:
-            # If auto-start is disabled, ensure agent is stopped on startup
             if hasattr(self, 'git_settings_tab') and self.git_settings_tab.git_installed:
                 self.git_settings_tab.stop_ssh_agent()
 
-
         # Setup periodic sync timer
         self.periodic_sync_timer = QTimer(self)
-        # The interval for the main application's timer. This defines how often
-        # the application checks if any repositories are due for pull/commit/push.
-        # Set to a relatively short interval (e.g., 30 seconds) so it's responsive
-        # to individual repo intervals which might be longer.
         self.periodic_sync_timer.setInterval(30 * 1000) # Check every 30 seconds
         self.periodic_sync_timer.timeout.connect(self.perform_periodic_sync)
         self.periodic_sync_timer.start()
@@ -132,19 +127,16 @@ class GitBuddyApp(QMainWindow):
         global_pause_layout.setSpacing(15)
 
         self.pause_pull_checkbox = QCheckBox("Pause All Auto Pulls")
-        # Corrected: Use isChecked() to get the boolean state
         self.pause_pull_checkbox.setChecked(self.global_pause_pull)
         self.pause_pull_checkbox.stateChanged.connect(lambda: self.set_global_pause('pull', self.pause_pull_checkbox.isChecked()))
         global_pause_layout.addWidget(self.pause_pull_checkbox)
 
         self.pause_commit_checkbox = QCheckBox("Pause All Auto Commits")
-        # Corrected: Use isChecked() to get the boolean state
         self.pause_commit_checkbox.setChecked(self.global_pause_commit)
         self.pause_commit_checkbox.stateChanged.connect(lambda: self.set_global_pause('commit', self.pause_commit_checkbox.isChecked()))
         global_pause_layout.addWidget(self.pause_commit_checkbox)
 
         self.pause_push_checkbox = QCheckBox("Pause All Auto Pushes")
-        # Corrected: Use isChecked() to get the boolean state
         self.pause_push_checkbox.setChecked(self.global_pause_push)
         self.pause_push_checkbox.stateChanged.connect(lambda: self.set_global_pause('push', self.pause_push_checkbox.isChecked()))
         global_pause_layout.addWidget(self.pause_push_checkbox)
@@ -157,29 +149,27 @@ class GitBuddyApp(QMainWindow):
         self.tab_widget = QTabWidget()
         main_layout.addWidget(self.tab_widget)
 
-        # Create instances of our tab widgets
-        self.current_branch_tab = CurrentBranchTab()
-        self.repo_config_tab = RepoConfigTab(CONFIG_DIR)
-        self.merge_tab = MergeTab()
-        self.bisect_tab = BisectTab()
-        # Pass initial git_accounts_data and auto_start_ssh_agent to GitSettingsTab
-        self.git_settings_tab = GitSettingsTab(CONFIG_DIR, self.git_accounts_data, self.auto_start_ssh_agent)
+        # Create instances of our tab widgets, passing initial data and parent explicitly
+        self.current_branch_tab = CurrentBranchTab(parent=self)
+        self.repo_config_tab = RepoConfigTab(self.repositories_data, parent=self)
+        self.merge_tab = MergeTab(parent=self)
+        self.bisect_tab = BisectTab(parent=self)
+        self.git_settings_tab = GitSettingsTab(initial_git_accounts_data=self.git_accounts_data, auto_start_ssh_agent_initial=self.auto_start_ssh_agent, parent=self)
 
-        # Connect the global signal to each tab's update method
+        # Connect global signals to each tab's update method
         self.global_repo_path_changed.connect(self.current_branch_tab.set_selected_repo_path)
         self.global_repo_path_changed.connect(self.repo_config_tab.set_selected_repo_path)
         self.global_repo_path_changed.connect(self.merge_tab.set_selected_repo_path)
         self.global_repo_path_changed.connect(self.bisect_tab.set_selected_repo_path)
 
-        # Connect RepoConfigTab's signal to refresh the global combobox AND the internal repo data
-        self.repo_config_tab.repo_config_changed.connect(self.load_configured_repos_to_selector)
-        self.repo_config_tab.repo_config_changed.connect(self.load_configured_repos_data) # Refresh internal data
-        # Connect GitSettingsTab's signal to refresh Git accounts data in GitBuddyApp
-        self.git_settings_tab.git_accounts_changed.connect(self.load_git_accounts_data)
-
-
-        # Connect GitSettingsTab's auto_start_ssh_agent_setting_changed signal
+        # Connect signals from tabs to GitBuddyApp slots for centralized management
+        self.repo_config_tab.repo_config_changed.connect(self.on_repo_config_changed)
+        self.git_settings_tab.git_accounts_changed.connect(self.on_git_accounts_changed)
         self.git_settings_tab.auto_start_ssh_agent_setting_changed.connect(self.set_auto_start_ssh_agent)
+
+        # Connect GitBuddyApp's data update signals to tabs for refresh
+        self.repo_data_updated.connect(self.repo_config_tab.on_repo_data_updated)
+        self.git_accounts_data_updated.connect(self.git_settings_tab.on_git_accounts_data_updated)
 
 
         # Add tabs to the QTabWidget in the specified order
@@ -189,18 +179,16 @@ class GitBuddyApp(QMainWindow):
         self.tab_widget.addTab(self.bisect_tab, "Bisect")
         self.tab_widget.addTab(self.git_settings_tab, "Git Settings")
 
+
     def setup_tray_icon(self):
         """Sets up the system tray icon and its context menu."""
         self.tray_icon = QSystemTrayIcon(self)
-        # Set the tray icon
-        # Ensure 'icon.png' is in the same directory as this script,
-        # or provide a full path to the icon file.
         self.tray_icon.setIcon(QIcon("icon.png"))
         self.tray_icon.setToolTip("GitBuddy: Auto Git Sync")
 
         # Create context menu
         self.tray_menu = QMenu()
-        self.tray_menu.aboutToShow.connect(self.update_tray_menu_state) # Connect to update state before showing
+        self.tray_menu.aboutToShow.connect(self.update_tray_menu_state)
 
         # Add actions to the tray menu
         show_hide_action = QAction("Show/Hide GitBuddy", self)
@@ -222,7 +210,7 @@ class GitBuddyApp(QMainWindow):
         self.action_pause_push = QAction("Pause All Auto Pushes", self)
         self.action_pause_push.setCheckable(True)
         self.action_pause_push.triggered.connect(lambda checked: self.set_global_pause('push', checked))
-        self.tray_menu.addAction(self.action_pause_push) # Corrected typo: changed self.action_push_action to self.action_pause_push
+        self.tray_menu.addAction(self.action_pause_push)
         self.tray_menu.addSeparator()
 
         exit_action = QAction("Exit GitBuddy", self)
@@ -230,7 +218,7 @@ class GitBuddyApp(QMainWindow):
         self.tray_menu.addAction(exit_action)
 
         self.tray_icon.setContextMenu(self.tray_menu)
-        self.tray_icon.activated.connect(self.on_tray_icon_activated) # For double-click
+        self.tray_icon.activated.connect(self.on_tray_icon_activated)
         self.tray_icon.show()
 
     def update_tray_menu_state(self):
@@ -263,11 +251,10 @@ class GitBuddyApp(QMainWindow):
         
         # Stop SSH Agent if it was auto-started and is running
         if self.auto_start_ssh_agent and self.git_settings_tab.git_installed:
-            # Check if agent is actually running before attempting to stop
             if "SSH_AUTH_SOCK" in os.environ and os.path.exists(os.environ["SSH_AUTH_SOCK"]):
                 self.git_settings_tab.stop_ssh_agent()
 
-        self.tray_icon.hide() # Hide tray icon before quitting
+        self.tray_icon.hide()
         QApplication.quit()
 
     def closeEvent(self, event):
@@ -280,73 +267,47 @@ class GitBuddyApp(QMainWindow):
                 QSystemTrayIcon.Information,
                 2000
             )
-            event.ignore() # Do not close the application
+            event.ignore()
         else:
-            # If for some reason tray icon is not visible, allow normal close
             event.accept()
 
     def load_configured_repos_to_selector(self):
-        """Loads repository paths from config.json and populates the combobox."""
+        """Loads repository paths from self.repositories_data and populates the combobox."""
         current_selected_path = self.global_repo_path_input.text()
         
-        # Disconnect to prevent triggering on_repo_selection_changed during repopulation
         self.repo_selector_combobox.currentIndexChanged.disconnect(self.on_repo_selection_changed)
         self.repo_selector_combobox.clear()
 
-        configured_paths = []
-        if os.path.exists(CONFIG_FILE):
-            try:
-                with open(CONFIG_FILE, 'r') as f:
-                    full_config = json.load(f)
-                    # If the loaded config is a list (old format), wrap it in a dictionary
-                    if isinstance(full_config, list):
-                        full_config = {'repositories': full_config}
-                    
-                    repos_config = full_config.get('repositories', [])
-                    if isinstance(repos_config, list):
-                        for entry in repos_config:
-                            if isinstance(entry, dict) and 'path' in entry:
-                                configured_paths.append(entry['path'])
-            except json.JSONDecodeError:
-                logging.warning("Config Load Error: Could not load repository configuration. File might be corrupted.")
-                pass # Handle corrupted config gracefully
+        configured_paths = [repo['path'] for repo in self.repositories_data if 'path' in repo]
 
         for path in configured_paths:
-            repo_name = os.path.basename(path) # Get only the directory name
-            self.repo_selector_combobox.addItem(repo_name, path) # Store full path as itemData
+            repo_name = os.path.basename(path)
+            self.repo_selector_combobox.addItem(repo_name, path)
         
-        self.repo_selector_combobox.addItem("-- Other (Manual Path) --", "") # Option for non-configured repos, empty data
+        self.repo_selector_combobox.addItem("-- Other (Manual Path) --", "")
 
-        # Attempt to restore previous selection or set a default
         index_to_select = -1
         if current_selected_path:
-            # Try to find by stored data (full path)
             index_to_select = self.repo_selector_combobox.findData(current_selected_path)
         
         if index_to_select != -1:
             self.repo_selector_combobox.setCurrentIndex(index_to_select)
-            # Ensure global_repo_path_input is correctly set if it was a configured repo
             self.global_repo_path_input.setText(current_selected_path)
             self.global_repo_path_input.setReadOnly(True)
             self.global_browse_button.setEnabled(False)
         elif configured_paths:
-            # If previous path not found, but there are configured paths, select the first one
             self.repo_selector_combobox.setCurrentIndex(0)
             self.global_repo_path_input.setText(self.repo_selector_combobox.currentData())
             self.global_repo_path_input.setReadOnly(True)
             self.global_browse_button.setEnabled(False)
         else:
-            # If no configured paths, or previous path not found, select "Other"
             self.repo_selector_combobox.setCurrentIndex(self.repo_selector_combobox.count() - 1)
             self.global_repo_path_input.clear()
             self.global_repo_path_input.setReadOnly(False)
             self.global_browse_button.setEnabled(True)
             self.global_repo_path_input.setFocus()
 
-        # Reconnect the signal
         self.repo_selector_combobox.currentIndexChanged.connect(self.on_repo_selection_changed)
-
-        # Manually trigger the update for the initial state
         self.on_repo_selection_changed(self.repo_selector_combobox.currentIndex())
 
     def on_repo_selection_changed(self, index):
@@ -388,14 +349,14 @@ class GitBuddyApp(QMainWindow):
         """Sets the global pause state for a specific task type and saves it."""
         if task_type == 'pull':
             self.global_pause_pull = paused
-            self.pause_pull_checkbox.setChecked(paused) # Update GUI checkbox
+            self.pause_pull_checkbox.setChecked(paused)
         elif task_type == 'commit':
             self.global_pause_commit = paused
-            self.pause_commit_checkbox.setChecked(paused) # Update GUI checkbox
+            self.pause_commit_checkbox.setChecked(paused)
         elif task_type == 'push':
             self.global_pause_push = paused
-            self.pause_push_checkbox.setChecked(paused) # Update GUI checkbox
-        self.save_global_config()
+            self.pause_push_checkbox.setChecked(paused)
+        self.save_all_configurations() # Save changes
         logging.info(f"Global pause for {task_type} set to {paused}.")
 
     def set_auto_start_ssh_agent(self, enable: bool):
@@ -405,217 +366,138 @@ class GitBuddyApp(QMainWindow):
         """
         logging.info(f"Received auto-start SSH agent setting: {enable}")
         self.auto_start_ssh_agent = enable
-        self.save_global_config() # Save the updated setting
+        self.save_all_configurations() # Save changes
 
-        # Now, instruct the GitSettingsTab to manage the SSH agent based on this setting
-        # This ensures the GitSettingsTab's internal logic for starting/stopping is used.
         if enable:
-            # If auto-start is enabled, and Git is installed, try to start the agent
             if self.git_settings_tab.git_installed:
                 self.git_settings_tab.start_ssh_agent()
         else:
-            # If auto-start is disabled, stop the agent
-            self.git_settings_tab.stop_ssh_agent()
+            if self.git_settings_tab.git_installed:
+                self.git_settings_tab.stop_ssh_agent()
 
-    def save_global_config(self):
-        """Saves the global pause settings and auto_start_ssh_agent to the configuration file."""
-        current_config = {}
-        if os.path.exists(CONFIG_FILE):
+    def on_repo_config_changed(self, new_repos_data: list):
+        """Slot to receive updated repository data from RepoConfigTab."""
+        self.repositories_data = new_repos_data
+        self.save_all_configurations() # Save the updated data
+        self.load_configured_repos_to_selector() # Refresh the global selector
+        self.repo_data_updated.emit(self.repositories_data) # Notify other tabs
+
+    def on_git_accounts_changed(self, new_accounts_data: list):
+        """Slot to receive updated Git accounts data from GitSettingsTab."""
+        self.git_accounts_data = new_accounts_data
+        self.save_all_configurations() # Save the updated data
+        self.git_accounts_data_updated.emit(self.git_accounts_data) # Notify other tabs
+
+    def load_all_configurations(self):
+        """
+        Loads all application configurations (repositories, global settings, git accounts)
+        from their respective files.
+        """
+        # Load main config file (repositories and global settings)
+        if os.path.exists(MAIN_CONFIG_FILE):
             try:
-                with open(CONFIG_FILE, 'r') as f:
-                    loaded_config = json.load(f)
-                    # If the loaded config is a list (old format), convert it to a dictionary
-                    if isinstance(loaded_config, list):
-                        current_config['repositories'] = loaded_config
+                with open(MAIN_CONFIG_FILE, 'r') as f:
+                    full_config = json.load(f)
+                    if isinstance(full_config, list): # Handle old list format
+                        self.repositories_data = full_config
+                        # Default global settings for old format
+                        self.global_pause_pull = False
+                        self.global_pause_commit = False
+                        self.global_pause_push = False
+                        self.auto_start_ssh_agent = False
+                        logging.info(f"Migrated old config format from {MAIN_CONFIG_FILE}.")
+                    elif isinstance(full_config, dict):
+                        self.repositories_data = full_config.get('repositories', [])
+                        self.global_pause_pull = full_config.get('global_pause_pull', False)
+                        self.global_pause_commit = full_config.get('global_pause_commit', False)
+                        self.global_pause_push = full_config.get('global_pause_push', False)
+                        self.auto_start_ssh_agent = full_config.get('auto_start_ssh_agent', False)
                     else:
-                        current_config = loaded_config
-            except json.JSONDecodeError:
-                logging.warning(f"Could not load existing config from {CONFIG_FILE}. Starting with empty config for global settings save.")
-                current_config = {}
-        
-        current_config['global_pause_pull'] = self.global_pause_pull
-        current_config['global_pause_commit'] = self.global_pause_commit
-        current_config['global_pause_push'] = self.global_pause_push
-        current_config['auto_start_ssh_agent'] = self.auto_start_ssh_agent # Save this setting
+                        logging.error(f"Main config file {MAIN_CONFIG_FILE} is malformed. Expected dict or list.")
+                        self.repositories_data = []
+            except json.JSONDecodeError as e:
+                logging.error(f"Error decoding JSON from {MAIN_CONFIG_FILE}: {e}")
+                self.repositories_data = []
+            except Exception as e:
+                logging.error(f"An unexpected error occurred while loading main config: {e}")
+                self.repositories_data = []
+        else:
+            logging.info(f"Main config file not found: {MAIN_CONFIG_FILE}. Initializing defaults.")
+            self.repositories_data = [] # Ensure it's empty if file doesn't exist
 
-        # Ensure repositories data is preserved if it exists
-        # This line is slightly redundant now that 'repositories' is handled above,
-        # but keeps existing structure if other keys were present.
-        if 'repositories' not in current_config:
-            current_config['repositories'] = [] # Initialize if not present
+        # Initialize 'last_pulled_at', 'last_committed_at', 'last_pushed_at' for periodic sync
+        for repo in self.repositories_data:
+            repo.setdefault('last_pulled_at', datetime.min)
+            repo.setdefault('last_committed_at', datetime.min)
+            repo.setdefault('last_pushed_at', datetime.min)
+            # Ensure intervals are in seconds for internal use
+            repo['pull_interval'] = max(60, repo.get('pull_interval', 120) * 60 if repo.get('pull_interval') < 1000 else repo.get('pull_interval', 120)) # Convert minutes to seconds if small value, otherwise assume seconds
+            repo['commit_interval'] = max(60, repo.get('commit_interval', 20) * 60 if repo.get('commit_interval') < 1000 else repo.get('commit_interval', 20))
+            repo['push_interval'] = max(60, repo.get('push_interval', 60) * 60 if repo.get('push_interval') < 1000 else repo.get('push_interval', 60))
 
-        try:
-            with open(CONFIG_FILE, 'w') as f:
-                json.dump(current_config, f, indent=4)
-            logging.info("Global pause settings and auto_start_ssh_agent saved.")
-        except Exception as e:
-            logging.error(f"Failed to save global pause settings: {e}")
+        logging.info(f"Loaded {len(self.repositories_data)} repositories for periodic sync.")
 
-    def load_git_accounts_data(self):
-        """
-        Loads Git account data from the git_accounts.json file.
-        Initializes self.git_accounts_data to an empty list if the file does not exist or is malformed.
-        """
-        self.git_accounts_data = [] # Reset to empty before loading
-
-        if not os.path.exists(GIT_ACCOUNTS_FILE):
+        # Load Git accounts data
+        if os.path.exists(GIT_ACCOUNTS_FILE):
+            try:
+                with open(GIT_ACCOUNTS_FILE, 'r') as f:
+                    accounts_config = json.load(f)
+                    if isinstance(accounts_config, list):
+                        self.git_accounts_data = accounts_config
+                    else:
+                        logging.warning(f"Git accounts file '{GIT_ACCOUNTS_FILE}' is malformed. Expected a list.")
+                        self.git_accounts_data = []
+            except json.JSONDecodeError as e:
+                logging.error(f"Error decoding JSON from {GIT_ACCOUNTS_FILE}: {e}")
+                self.git_accounts_data = []
+            except Exception as e:
+                logging.error(f"An unexpected error occurred while loading Git accounts: {e}")
+                self.git_accounts_data = []
+        else:
             logging.info(f"Git accounts file not found: {GIT_ACCOUNTS_FILE}. Initializing empty list.")
-            return
+            self.git_accounts_data = []
 
+        # Update UI checkboxes if they exist (will be called before init_ui for initial load,
+        # so these might not exist yet. The init_ui will set them based on self.global_pause_X)
+        if hasattr(self, 'pause_pull_checkbox'):
+            self.pause_pull_checkbox.setChecked(self.global_pause_pull)
+        if hasattr(self, 'pause_commit_checkbox'):
+            self.pause_commit_checkbox.setChecked(self.global_pause_commit)
+        if hasattr(self, 'pause_push_checkbox'):
+            self.pause_push_checkbox.setChecked(self.global_pause_push)
+
+    def save_all_configurations(self):
+        """
+        Saves all application configurations (repositories, global settings, git accounts)
+        to their respective files.
+        """
+        # Save main config file (repositories and global settings)
+        main_config_to_save = {
+            'repositories': [
+                {k: v for k, v in repo.items() if k not in ['last_pulled_at', 'last_committed_at', 'last_pushed_at']}
+                for repo in self.repositories_data
+            ],
+            'global_pause_pull': self.global_pause_pull,
+            'global_pause_commit': self.global_pause_commit,
+            'global_pause_push': self.global_pause_push,
+            'auto_start_ssh_agent': self.auto_start_ssh_agent
+        }
         try:
-            with open(GIT_ACCOUNTS_FILE, 'r') as f:
-                accounts_config = json.load(f)
-                if not isinstance(accounts_config, list):
-                    logging.warning(f"Git accounts file '{GIT_ACCOUNTS_FILE}' is malformed. Expected a list of objects.")
-                    return # Keep self.git_accounts_data as empty list
-                
-                for entry in accounts_config:
-                    # Basic validation for an account entry
-                    if isinstance(entry, dict) and 'username' in entry and 'host' in entry:
-                        self.git_accounts_data.append(entry)
-                    else:
-                        logging.warning(f"Skipping malformed or incomplete Git account entry in config file: {entry}")
-            logging.info(f"Loaded {len(self.git_accounts_data)} Git accounts.")
-        except json.JSONDecodeError:
-            logging.warning(f"Error decoding JSON from {GIT_ACCOUNTS_FILE}. File might be corrupted. Initializing empty list.")
-            self.git_accounts_data = [] # Ensure it's empty on JSON error
+            os.makedirs(CONFIG_DIR, exist_ok=True)
+            with open(MAIN_CONFIG_FILE, 'w') as f:
+                json.dump(main_config_to_save, f, indent=4)
+            logging.info(f"Main configuration saved to {MAIN_CONFIG_FILE}.")
         except Exception as e:
-            logging.error(f"An unexpected error occurred while loading Git accounts: {e}")
-            self.git_accounts_data = [] # Ensure it's empty on other errors
+            logging.error(f"Failed to save main configuration: {e}")
 
-
-    # --- Integrated Auto Functions ---
-    def load_configured_repos_data(self):
-        """
-        Loads the list of Git repository configurations from the configuration file,
-        including global pause settings and auto_start_ssh_agent.
-        Initializes 'last_pulled_at', 'last_committed_at', and 'last_pushed_at' for internal tracking.
-        Converts intervals from minutes to seconds.
-        Returns an empty list if the file does not exist or is malformed.
-        """
-        if not os.path.exists(CONFIG_FILE):
-            logging.warning(f"Configuration file not found: {CONFIG_FILE}. Initializing empty list.")
-            self.repositories_data = []
-            # Initialize global settings to default if config file doesn't exist
-            self.global_pause_pull = False
-            self.global_pause_commit = False
-            self.global_pause_push = False
-            self.auto_start_ssh_agent = False
-            return
-
+        # Save Git accounts data
         try:
-            with open(CONFIG_FILE, 'r') as f:
-                full_config = json.load(f)
-                # If the loaded config is a list (old format), wrap it in a dictionary
-                if isinstance(full_config, list):
-                    full_config = {'repositories': full_config}
-
-                if not isinstance(full_config, dict):
-                    logging.error(f"Configuration file {CONFIG_FILE} is malformed. Expected a dictionary or list.")
-                    self.repositories_data = []
-                    # Reset global settings to default on malformed config
-                    self.global_pause_pull = False
-                    self.global_pause_commit = False
-                    self.global_pause_push = False
-                    self.auto_start_ssh_agent = False
-                    return
-
-                # Load global pause settings
-                self.global_pause_pull = full_config.get('global_pause_pull', False)
-                self.global_pause_commit = full_config.get('global_pause_commit', False)
-                self.global_pause_push = full_config.get('global_pause_push', False)
-                # Load auto_start_ssh_agent setting
-                self.auto_start_ssh_agent = full_config.get('auto_start_ssh_agent', False)
-
-
-                # Update UI checkboxes if they exist (will be called before init_ui for initial load,
-                # so these might not exist yet. The init_ui will set them based on self.global_pause_X and self.auto_start_ssh_agent)
-                if hasattr(self, 'pause_pull_checkbox'):
-                    self.pause_pull_checkbox.setChecked(self.global_pause_pull)
-                if hasattr(self, 'pause_commit_checkbox'):
-                    self.pause_commit_checkbox.setChecked(self.global_pause_commit)
-                if hasattr(self, 'pause_push_checkbox'):
-                    self.pause_push_checkbox.setChecked(self.global_pause_push)
-                # The GitSettingsTab's checkbox will be set in its own __init__ using the passed initial value.
-
-                repos_config = full_config.get('repositories', [])
-                if not isinstance(repos_config, list):
-                    logging.error(f"Repositories section in {CONFIG_FILE} is malformed. Expected a list.")
-                    self.repositories_data = []
-                    return
-
-                new_repositories_data = []
-                for entry in repos_config:
-                    if not isinstance(entry, dict) or 'path' not in entry:
-                        logging.warning(f"Malformed repository entry: {entry}. Skipping.")
-                        continue
-
-                    repo_path = entry['path']
-                    
-                    auto_pull = entry.get('auto_pull', False)
-                    pull_interval_minutes = entry.get('pull_interval', 120) # Default 2 hours if not specified
-                    auto_commit = entry.get('auto_commit', False)
-                    commit_interval_minutes = entry.get('commit_interval', 20) # Default 20 minutes
-                    commit_message_template = entry.get('commit_message_template', "Auto-commit from GitBuddy: {timestamp}")
-                    auto_push = entry.get('auto_push', False)
-                    push_interval_minutes = entry.get('push_interval', 60) # Default 1 hour
-
-                    # Validate intervals and convert to seconds
-                    pull_interval_seconds = max(60, pull_interval_minutes * 60) # Min 1 minute
-                    commit_interval_seconds = max(60, commit_interval_minutes * 60) # Min 1 minute
-                    push_interval_seconds = max(60, push_interval_minutes * 60) # Min 1 minute
-
-                    # Preserve last_run timestamps if repository already exists in current data
-                    # Initialize with datetime.min if not found
-                    existing_repo = next((r for r in self.repositories_data if r['path'] == repo_path), None)
-                    
-                    new_repositories_data.append({
-                        'path': repo_path,
-                        'auto_pull': auto_pull,
-                        'pull_interval': pull_interval_seconds,
-                        'last_pulled_at': existing_repo['last_pulled_at'] if existing_repo else datetime.min,
-                        'auto_commit': auto_commit,
-                        'commit_interval': commit_interval_seconds,
-                        'last_committed_at': existing_repo['last_committed_at'] if existing_repo else datetime.min,
-                        'commit_message_template': commit_message_template,
-                        'auto_push': auto_push,
-                        'push_interval': push_interval_seconds,
-                        'last_pushed_at': existing_repo['last_pushed_at'] if existing_repo else datetime.min
-                    })
-                self.repositories_data = new_repositories_data
-                logging.info(f"Loaded {len(self.repositories_data)} repositories for periodic sync.")
-        except json.JSONDecodeError as e:
-            logging.error(f"Error decoding JSON from {CONFIG_FILE}: {e}")
-            self.repositories_data = []
-            # Reset global settings to default on JSON error
-            self.global_pause_pull = False
-            self.global_pause_commit = False
-            self.global_pause_push = False
-            self.auto_start_ssh_agent = False
+            os.makedirs(CONFIG_DIR, exist_ok=True)
+            with open(GIT_ACCOUNTS_FILE, 'w') as f:
+                json.dump(self.git_accounts_data, f, indent=4)
+            logging.info(f"Git accounts saved to {GIT_ACCOUNTS_FILE}")
         except Exception as e:
-            logging.error(f"An unexpected error occurred while loading config for auto functions: {e}")
-            self.repositories_data = []
-            # Reset global settings to default on other errors
-            self.global_pause_pull = False
-            self.global_pause_commit = False
-            self.global_pause_push = False
-            self.auto_start_ssh_agent = False
-
-    def send_notification(self, title, message):
-        """
-        Sends a desktop notification using notify-send (Linux/Unix-like systems).
-        """
-        try:
-            # Check if DISPLAY environment variable is set for notify-send to work
-            if "DISPLAY" in os.environ:
-                subprocess.run(['notify-send', title, message], check=False)
-                logging.info(f"Notification sent: Title='{title}', Message='{message}'")
-            else:
-                logging.warning("DISPLAY environment variable not set. Cannot send desktop notifications.")
-        except FileNotFoundError:
-            logging.warning("notify-send command not found. Desktop notifications may not work.")
-        except Exception as e:
-            logging.error(f"Failed to send notification: {e}")
+            logging.error(f"Failed to save Git accounts: {e}")
 
     def run_git_command(self, repo_path, command_args, timeout=300):
         """
@@ -634,44 +516,32 @@ class GitBuddyApp(QMainWindow):
         full_command = ['git'] + command_args
         logging.info(f"Executing '{' '.join(full_command)}' in {repo_path}")
         
-        # Create a copy of the current environment variables
         env = os.environ.copy()
-        # Set GIT_TERMINAL_PROMPT to 0 and GIT_ASKPASS to /bin/true to prevent Git from asking for credentials interactively
         env['GIT_TERMINAL_PROMPT'] = '0'
-        env['GIT_ASKPASS'] = '/bin/true' # Forces Git to use a non-interactive password helper
+        env['GIT_ASKPASS'] = '/bin/true'
 
         try:
             result = subprocess.run(
                 full_command,
                 cwd=repo_path,
-                check=False, # Do not raise CalledProcessError automatically
+                check=False,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
-                stdin=subprocess.PIPE, # Prevent interactive prompts by closing stdin
-                env=env # Pass the modified environment
+                stdin=subprocess.PIPE,
+                env=env
             )
             
             stderr_output = result.stderr.strip()
             stdout_output = result.stdout.strip()
 
-            # Check for common authentication failure messages in stderr
             auth_error_keywords = [
-                "authentication failed",
-                "could not read username",
-                "could not read password",
-                "permission denied (publickey)",
-                "fatal: authentication failed",
-                "remote: authentication required",
-                "bad credentials",
-                "no matching private key",
-                "sign_and_send_pubkey: no mutual signature algorithm", # Specific SSH key error
-                "username for", # Direct prompt for username (less likely with GIT_ASKPASS)
-                "password for", # Direct prompt for password (less likely with GIT_ASKPASS)
-                "ssh: connect to host", # General SSH connection issue, often auth related
-                "no supported authentication methods available", # SSH auth methods exhausted
-                "fatal: could not read from remote repository", # Generic remote repo error, often auth related
-                "fatal: repository not found" # Can sometimes be a disguised auth issue for private repos
+                "authentication failed", "could not read username", "could not read password",
+                "permission denied (publickey)", "fatal: authentication failed", "remote: authentication required",
+                "bad credentials", "no matching private key", "sign_and_send_pubkey: no mutual signature algorithm",
+                "username for", "password for", "ssh: connect to host",
+                "no supported authentication methods available", "fatal: could not read from remote repository",
+                "fatal: repository not found"
             ]
             is_auth_error = any(keyword in stderr_output.lower() for keyword in auth_error_keywords)
 
@@ -683,7 +553,7 @@ class GitBuddyApp(QMainWindow):
             logging.info(f"Command success for {repo_path}: {stdout_output}")
             if stderr_output:
                 logging.warning(f"Command for {repo_path} had stderr output:\n{stderr_output}")
-            return True, stdout_output, False # No authentication error if successful return code
+            return True, stdout_output, False
         
         except FileNotFoundError:
             logging.error("Git command not found. Please ensure Git is installed and in your PATH.")
@@ -732,7 +602,6 @@ class GitBuddyApp(QMainWindow):
         Stages all changes and performs a 'git commit'.
         Uses a human-readable timestamp in the commit message.
         """
-        # First, check if there are any changes to commit
         success_status, output_status, _ = self.run_git_command(repo_path, ['status', '--porcelain'], timeout=60)
         if not success_status:
             logging.error(f"Failed to get git status for {repo_path}. Skipping commit.")
@@ -754,7 +623,6 @@ class GitBuddyApp(QMainWindow):
         commit_message = commit_message_template.format(timestamp=timestamp)
         logging.info(f"Attempting to commit {repo_path} with message: '{commit_message}'")
         success_commit, message_commit, is_auth_error = self.run_git_command(repo_path, ['commit', '-m', commit_message])
-        # Commit itself usually doesn't need auth, but it's good to pass the flag just in case
         return self.handle_git_operation_result(repo_path, "commit", success_commit, message_commit, is_auth_error)
 
     def push_repository(self, repo_path):
@@ -776,15 +644,13 @@ class GitBuddyApp(QMainWindow):
         for repo_data in self.repositories_data:
             repo_path = repo_data['path']
             
-            # Ensure the repository path is valid before attempting operations
             if not os.path.isdir(repo_path) or not os.path.isdir(os.path.join(repo_path, ".git")):
                 logging.warning(f"Skipping invalid repository path: {repo_path}. Not a directory or not a Git repo.")
-                continue # Skip to the next repository
+                continue
 
             current_time = datetime.now()
 
             # --- Pull Logic ---
-            # Check global pause for pull and individual auto_pull setting
             if not self.global_pause_pull and repo_data['auto_pull']:
                 pull_interval_seconds = repo_data['pull_interval']
                 last_pulled = repo_data['last_pulled_at']
@@ -804,7 +670,6 @@ class GitBuddyApp(QMainWindow):
                     logging.debug(f"Auto-pull is disabled for {repo_path}.")
 
             # --- Commit Logic ---
-            # Check global pause for commit and individual auto_commit setting
             if not self.global_pause_commit and repo_data['auto_commit']:
                 commit_interval_seconds = repo_data['commit_interval']
                 last_committed = repo_data['last_committed_at']
@@ -825,7 +690,6 @@ class GitBuddyApp(QMainWindow):
                     logging.debug(f"Auto-commit is disabled for {repo_path}.")
 
             # --- Push Logic ---
-            # Check global pause for push and individual auto_push setting
             if not self.global_pause_push and repo_data['auto_push']:
                 push_interval_seconds = repo_data['push_interval']
                 last_pushed = repo_data['last_pushed_at']
@@ -843,3 +707,18 @@ class GitBuddyApp(QMainWindow):
                     logging.debug(f"Auto-push is globally paused. Skipping for {repo_path}.")
                 else:
                     logging.debug(f"Auto-push is disabled for {repo_path}.")
+
+    def send_notification(self, title, message):
+        """
+        Sends a desktop notification using notify-send (Linux/Unix-like systems).
+        """
+        try:
+            if "DISPLAY" in os.environ:
+                subprocess.run(['notify-send', title, message], check=False)
+                logging.info(f"Notification sent: Title='{title}', Message='{message}'")
+            else:
+                logging.warning("DISPLAY environment variable not set. Cannot send desktop notifications.")
+        except FileNotFoundError:
+            logging.warning("notify-send command not found. Desktop notifications may not work.")
+        except Exception as e:
+            logging.error(f"Failed to send notification: {e}")
