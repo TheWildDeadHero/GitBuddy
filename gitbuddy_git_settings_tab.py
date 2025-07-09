@@ -3,12 +3,12 @@
 import os
 import subprocess
 import json
-import platform
+import platform # Import platform to detect OS
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QComboBox,
     QMessageBox, QGroupBox, QLineEdit, QTableWidget, QTableWidgetItem,
     QHeaderView, QInputDialog, QFileDialog, QDialog, QRadioButton,
-    QButtonGroup, QStackedWidget, QCheckBox
+    QButtonGroup, QStackedWidget, QTextEdit, QApplication, QCheckBox
 )
 from PySide6.QtCore import Qt, Signal # Import Signal
 import logging # Import logging
@@ -312,13 +312,14 @@ class GitSettingsTab(QWidget):
     git_accounts_changed = Signal(list) # New signal to emit updated accounts data
     auto_start_ssh_agent_setting_changed = Signal(bool) # Signal for auto-start SSH agent setting
 
-    def __init__(self, initial_git_accounts_data, auto_start_ssh_agent_initial, parent=None): # Accept initial data
+    def __init__(self, git_accounts_initial, auto_start_ssh_agent_initial, parent=None): # Accept initial data
         super().__init__(parent)
-        self.git_accounts_data = initial_git_accounts_data # Initialize with data from central state
+        self.git_accounts_data = git_accounts_initial # Initialize with data from central state
         self.auto_start_ssh_agent = auto_start_ssh_agent_initial # Initialize auto-start setting
         self.last_generated_key_path = None
         self.git_installed = False
         self.ssh_agent_pid = None # To store the PID of the running ssh-agent
+        self.ssh_auth_sock = None # To store the SSH_AUTH_SOCK environment variable
 
         self.ui_elements_to_disable = []
 
@@ -327,6 +328,7 @@ class GitSettingsTab(QWidget):
         # The auto-start logic is now in GitBuddyApp, which calls start_ssh_agent if needed after this tab is ready.
 
     def init_ui(self):
+        """Initializes the Git settings tab UI."""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(15)
@@ -483,6 +485,21 @@ class GitSettingsTab(QWidget):
         self.git_accounts_data = data
         self.load_git_accounts() # Reload the table with the new data
 
+    def set_auto_start_ssh_agent_setting(self, enable: bool):
+        """
+        Updates the internal auto_start_ssh_agent setting and the checkbox state.
+        Called by the parent (GitBuddyApp) when data changes.
+        """
+        self.auto_start_ssh_agent = enable
+        # Disconnect to prevent recursive signal emission
+        try:
+            self.auto_start_ssh_agent_checkbox.stateChanged.disconnect(self.on_auto_start_ssh_agent_changed)
+        except TypeError: # Handle case where it's not connected yet
+            pass
+        self.auto_start_ssh_agent_checkbox.setChecked(enable)
+        self.auto_start_ssh_agent_checkbox.stateChanged.connect(self.on_auto_start_ssh_agent_changed)
+
+
     def check_git_installation(self):
         """Checks if Git is installed and updates the UI state accordingly."""
         try:
@@ -529,14 +546,21 @@ class GitSettingsTab(QWidget):
         message = ""
 
         if os_name == "Linux":
-            distro = platform.freedesktop_os_release().get('ID', '').lower()
-            if "debian" in distro or "ubuntu" in distro:
+            # Using freedesktop_os_release for more robust distro detection
+            try:
+                with open("/etc/os-release", "r") as f:
+                    os_release_info = dict(line.strip().split("=", 1) for line in f if "=" in line)
+                distro_id = os_release_info.get('ID', '').lower()
+            except FileNotFoundError:
+                distro_id = "" # Fallback if file not found
+
+            if "debian" in distro_id or "ubuntu" in distro_id:
                 install_command = ['sudo', 'apt-get', 'update', '&&', 'sudo', 'apt-get', 'install', '-y', 'git']
                 message = "Attempting to install Git using apt-get. This may require your sudo password."
-            elif "fedora" in distro or "centos" in distro or "rhel" in distro:
+            elif "fedora" in distro_id or "centos" in distro_id or "rhel" in distro_id:
                 install_command = ['sudo', 'yum', 'install', '-y', 'git']
                 message = "Attempting to install Git using yum. This may require your sudo password."
-            elif "arch" in distro:
+            elif "arch" in distro_id:
                 install_command = ['sudo', 'pacman', '-S', '--noconfirm', 'git']
                 message = "Attempting to install Git using pacman. This may require your sudo password."
             else:
@@ -544,10 +568,21 @@ class GitSettingsTab(QWidget):
                                     "Unsupported Linux distribution. Please install Git manually via your package manager.")
                 return
         elif os_name == "Darwin":
-            install_command = ['/usr/bin/ruby', '-e', "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/master/install)"]
-            install_command += ['brew', 'install', 'git']
-            message = "Attempting to install Homebrew and then Git. This may require your password."
-            QMessageBox.information(self, "Install Git", "Installing Git on macOS usually involves Homebrew. Please follow any terminal prompts.")
+            # For macOS, recommend Homebrew. If Homebrew not installed, provide install command.
+            if subprocess.run(['which', 'brew'], capture_output=True).returncode != 0:
+                reply = QMessageBox.question(self, "Install Homebrew",
+                                             "Homebrew is not installed. Git is typically installed via Homebrew on macOS. "
+                                             "Do you want to install Homebrew now? This will open a terminal and may require your password.",
+                                             QMessageBox.Yes | QMessageBox.No)
+                if reply == QMessageBox.No:
+                    return
+                # Command to install Homebrew
+                install_command = ['/bin/bash', '-c', "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"]
+                message = "Installing Homebrew. Please follow the prompts in the terminal."
+            else:
+                install_command = ['brew', 'install', 'git']
+                message = "Attempting to install Git using Homebrew."
+            QMessageBox.information(self, "Install Git", message)
         elif os_name == "Windows":
             QMessageBox.information(self, "Install Git",
                                     "On Windows, it's recommended to download and run the Git installer from git-scm.com.\n"
@@ -560,20 +595,52 @@ class GitSettingsTab(QWidget):
             return
 
         if install_command:
-            QMessageBox.information(self, "Install Git", message)
             try:
-                process = subprocess.Popen(install_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                stdout, stderr = process.communicate()
-
-                if process.returncode == 0:
-                    pass
+                # For Linux/macOS, run the command in a new terminal window if possible for user interaction
+                if os_name == "Linux" and os.environ.get("XDG_CURRENT_DESKTOP"):
+                    # Try to open a terminal (e.g., gnome-terminal, konsole, xterm)
+                    terminal_commands = {
+                        "gnome": ["gnome-terminal", "--", "bash", "-c", " ".join(install_command) + "; echo 'Press Enter to close'; read"],
+                        "kde": ["konsole", "-e", "bash", "-c", " ".join(install_command) + "; echo 'Press Enter to close'; read"],
+                        "xfce": ["xfce4-terminal", "-e", "bash", "-c", " ".join(install_command) + "; echo 'Press Enter to close'; read"],
+                        "lxde": ["lxterminal", "-e", "bash", "-c", " ".join(install_command) + "; echo 'Press Enter to close'; read"],
+                        "mate": ["mate-terminal", "-e", "bash", "-c", " ".join(install_command) + "; echo 'Press Enter to close'; read"],
+                        "cinnamon": ["gnome-terminal", "--", "bash", "-c", " ".join(install_command) + "; echo 'Press Enter to close'; read"],
+                    }
+                    desktop_env = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
+                    chosen_terminal_command = None
+                    for key, cmd in terminal_commands.items():
+                        if key in desktop_env:
+                            chosen_terminal_command = cmd
+                            break
+                    
+                    if chosen_terminal_command:
+                        subprocess.Popen(chosen_terminal_command)
+                    else:
+                        # Fallback to xterm if no specific terminal found
+                        subprocess.Popen(['xterm', '-e', "bash", "-c", " ".join(install_command) + "; echo 'Press Enter to close'; read"])
+                elif os_name == "Darwin":
+                    # Open a new Terminal.app window
+                    subprocess.Popen(['osascript', '-e', f'tell application "Terminal" to do script "{ " ".join(install_command) }"'])
                 else:
-                    QMessageBox.critical(self, "Install Git Failed", f"Git installation command failed with error:\n{stderr}")
+                    # For other cases, just run directly (might block GUI or require console)
+                    process = subprocess.Popen(install_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    stdout, stderr = process.communicate()
+                    if process.returncode != 0:
+                        QMessageBox.critical(self, "Install Git Failed", f"Git installation command failed with error:\n{stderr}")
+                        return
+
+                # Give user time to complete installation in terminal
+                QMessageBox.information(self, "Installation in Progress", 
+                                        "Please follow the prompts in the terminal window to complete the Git installation. "
+                                        "Click 'OK' here once the terminal process is finished.")
+                
             except FileNotFoundError as e:
-                QMessageBox.critical(self, "Install Git Error", f"Installation command not found: {e.filename}. Make sure it's in your PATH.")
+                QMessageBox.critical(self, "Install Git Error", f"Installation command or terminal emulator not found: {e.filename}. Make sure it's in your PATH.")
             except Exception as e:
                 QMessageBox.critical(self, "Install Git Error", f"An unexpected error occurred during Git installation: {e}")
             finally:
+                # Re-check installation status after user acknowledges
                 self.check_git_installation()
 
     def run_git_command(self, command_args, cwd=None, timeout=60):
@@ -601,8 +668,13 @@ class GitSettingsTab(QWidget):
         except Exception as e:
             return False, f"An unexpected error occurred: {e}"
 
-    def run_command(self, command_args, timeout=60):
+    def run_command(self, command_args, timeout=60, env=None, suppress_errors=False):
         """Generic helper function to run any shell command."""
+        # Use the provided environment or a copy of current environment
+        current_env = os.environ.copy()
+        if env:
+            current_env.update(env)
+
         try:
             result = subprocess.run(
                 command_args,
@@ -610,16 +682,27 @@ class GitSettingsTab(QWidget):
                 capture_output=True,
                 text=True,
                 timeout=timeout,
-                shell=False
+                shell=False,
+                env=current_env # Pass the environment
             )
+            if not suppress_errors and result.returncode != 0:
+                logging.error(f"Command failed: {' '.join(command_args)}\nOutput: {result.stderr.strip()}")
             return True, result.stdout.strip()
         except subprocess.CalledProcessError as e:
+            if not suppress_errors:
+                logging.error(f"Command failed: {e.stderr.strip()}")
             return False, f"Command failed: {e.stderr.strip()}"
         except FileNotFoundError:
+            if not suppress_errors:
+                logging.error(f"Error: Command '{command_args[0]}' not found. Please ensure it's in your PATH.")
             return False, f"Error: Command '{command_args[0]}' not found. Please ensure it's in your PATH."
         except subprocess.TimeoutExpired:
+            if not suppress_errors:
+                logging.error(f"Error: Command timed out after {timeout} seconds.")
             return False, f"Error: Command timed out after {timeout} seconds."
         except Exception as e:
+            if not suppress_errors:
+                logging.error(f"An unexpected error occurred: {e}")
             return False, f"An unexpected error occurred: {e}"
 
     def load_git_config(self):
@@ -646,10 +729,6 @@ class GitSettingsTab(QWidget):
         if not self.git_installed:
             QMessageBox.warning(self, "Git Not Installed", "Git is not installed. Cannot save global config.")
             return
-
-        # Note: user.name and user.email inputs are not present in the current GitSettingsTab layout.
-        # If they were intended to be here, they need to be added back to init_ui.
-        # For now, only handling credential.helper as per current UI.
 
         credential_helper = self.credential_helper_combobox.currentText().strip()
 
@@ -697,14 +776,20 @@ class GitSettingsTab(QWidget):
             self.add_key_to_agent_button.setEnabled(False)
             return
 
+        # Check if SSH_AUTH_SOCK is set and points to a valid socket
         if "SSH_AUTH_SOCK" in os.environ and os.path.exists(os.environ["SSH_AUTH_SOCK"]):
-            success, output = self.run_command(['ssh-add', '-l'], timeout=5)
+            self.ssh_auth_sock = os.environ["SSH_AUTH_SOCK"]
+            self.ssh_agent_pid = int(os.environ.get("SSH_AGENT_PID", 0)) # Get PID if available
+
+            # Try to list keys to confirm agent is truly functional
+            success, output = self.run_command(['ssh-add', '-l'], timeout=5, env=os.environ, suppress_errors=True)
             if success:
                 self.ssh_agent_status_label.setText("SSH Agent Status: Running (Keys Loaded)")
                 self.start_ssh_agent_button.setText("Stop SSH Agent")
                 self.start_ssh_agent_button.setEnabled(True)
                 self.add_key_to_agent_button.setEnabled(True)
             else:
+                # Agent socket exists but ssh-add failed (e.g., no keys, or agent died)
                 self.ssh_agent_status_label.setText(f"SSH Agent Status: Running (Error: {output or 'No keys loaded'})")
                 self.start_ssh_agent_button.setText("Stop SSH Agent")
                 self.start_ssh_agent_button.setEnabled(True)
@@ -715,7 +800,14 @@ class GitSettingsTab(QWidget):
             self.start_ssh_agent_button.setEnabled(True)
             self.add_key_to_agent_button.setEnabled(False)
         
+        # Ensure auto-start checkbox reflects the current setting
+        # Disconnect/reconnect to avoid triggering signal during initial load
+        try:
+            self.auto_start_ssh_agent_checkbox.stateChanged.disconnect(self.on_auto_start_ssh_agent_changed)
+        except TypeError:
+            pass # Already disconnected or never connected
         self.auto_start_ssh_agent_checkbox.setChecked(self.auto_start_ssh_agent)
+        self.auto_start_ssh_agent_checkbox.stateChanged.connect(self.on_auto_start_ssh_agent_changed)
         self.auto_start_ssh_agent_checkbox.setEnabled(True) # Always enable if Git is installed
 
     def toggle_ssh_agent(self):
@@ -727,88 +819,126 @@ class GitSettingsTab(QWidget):
         if "SSH_AUTH_SOCK" in os.environ and os.path.exists(os.environ["SSH_AUTH_SOCK"]):
             self.stop_ssh_agent()
         else:
-            self.start_ssh_agent_process()
+            self.start_ssh_agent() # Call the method that handles environment setup
 
-    def start_ssh_agent_process(self):
-        """Starts the SSH agent, sets its environment variables, and enables lingering."""
+    def start_ssh_agent(self):
+        """Starts the SSH agent process and sets environment variables for the current process."""
         if not self.git_installed:
-            QMessageBox.warning(self, "Git Not Installed", "Git is not installed. Cannot start SSH Agent.")
-            return
+            logging.warning("Git not installed. Cannot start SSH Agent.")
+            return False
 
+        if "SSH_AUTH_SOCK" in os.environ and os.path.exists(os.environ["SSH_AUTH_SOCK"]):
+            logging.info("SSH Agent already appears to be running.")
+            self.check_ssh_agent_status()
+            return True # Already running
+
+        logging.info("Attempting to start SSH Agent...")
         try:
+            # Use 'ssh-agent -s' for sh/bash compatible output
             result = subprocess.run(['ssh-agent', '-s'], capture_output=True, text=True, check=True)
             output_lines = result.stdout.strip().split('\n')
 
-            ssh_auth_sock = None
-            ssh_agent_pid = None
+            new_ssh_auth_sock = None
+            new_ssh_agent_pid = None
 
             for line in output_lines:
                 if line.startswith('SSH_AUTH_SOCK='):
-                    ssh_auth_sock = line.split('=')[1].split(';')[0]
+                    new_ssh_auth_sock = line.split('=')[1].split(';')[0]
                 elif line.startswith('SSH_AGENT_PID='):
-                    ssh_agent_pid = line.split('=')[1].split(';')[0]
+                    new_ssh_agent_pid = line.split('=')[1].split(';')[0]
 
-            if ssh_auth_sock and ssh_agent_pid:
-                os.environ['SSH_AUTH_SOCK'] = ssh_auth_sock
-                os.environ['SSH_AGENT_PID'] = ssh_agent_pid
-                self.ssh_agent_pid = int(ssh_agent_pid) # Store PID
+            if new_ssh_auth_sock and new_ssh_agent_pid:
+                os.environ['SSH_AUTH_SOCK'] = new_ssh_auth_sock
+                os.environ['SSH_AGENT_PID'] = new_ssh_agent_pid
+                self.ssh_agent_pid = int(new_ssh_agent_pid)
+                self.ssh_auth_sock = new_ssh_auth_sock
+                logging.info(f"SSH Agent started successfully. PID: {self.ssh_agent_pid}, Socket: {self.ssh_auth_sock}")
 
+                # Enable lingering for the current user to keep agent running across sessions
                 current_user = os.getenv('USER')
                 if current_user:
                     linger_command = ['loginctl', 'enable-linger', current_user]
-                    linger_success, linger_message = self.run_command(linger_command)
+                    linger_success, linger_message = self.run_command(linger_command, suppress_errors=True)
                     if linger_success:
-                        pass
+                        logging.info(f"Lingering enabled for user '{current_user}'.")
                     else:
-                        QMessageBox.warning(self, "Lingering Error",
-                                            f"SSH Agent started, but failed to enable lingering for user '{current_user}': {linger_message}\n"
-                                            "You may need to run `loginctl enable-linger YOUR_USERNAME` manually in your terminal.")
+                        logging.warning(f"Failed to enable lingering for user '{current_user}': {linger_message}")
+                        QMessageBox.warning(self, "Lingering Warning",
+                                            f"SSH Agent started, but failed to enable lingering for user '{current_user}'.\n"
+                                            "The agent might not persist across sessions. You may need to run:\n"
+                                            f"`loginctl enable-linger {current_user}` manually in your terminal.")
                 else:
-                    QMessageBox.warning(self, "User Not Found",
+                    logging.warning("Could not determine current user to enable lingering.")
+                    QMessageBox.warning(self, "Lingering Warning",
                                         "SSH Agent started, but could not determine current user to enable lingering. "
-                                        "Please run `loginctl enable-linger YOUR_USERNAME` manually in your terminal.")
+                                        "Please run `loginctl enable-linger YOUR_USERNAME` manually in your terminal "
+                                        "if you want the SSH agent to persist across logins.")
+                self.check_ssh_agent_status()
+                return True
             else:
-                QMessageBox.critical(self, "SSH Agent Error", f"Failed to parse SSH Agent output. Output:\n{result.stdout}")
-
+                logging.error(f"Failed to parse SSH Agent output. Output:\n{result.stdout}\n{result.stderr}")
+                QMessageBox.critical(self, "SSH Agent Error", "Failed to parse SSH Agent output. Check logs for details.")
+                self.check_ssh_agent_status()
+                return False
         except subprocess.CalledProcessError as e:
+            logging.error(f"Failed to start SSH Agent: {e.stderr.strip()}")
             QMessageBox.critical(self, "SSH Agent Error", f"Failed to start SSH Agent: {e.stderr.strip()}")
+            self.check_ssh_agent_status()
+            return False
         except FileNotFoundError:
-            QMessageBox.critical(self, "Error", "ssh-agent or loginctl command not found. Please ensure OpenSSH and systemd are installed and in your PATH.")
+            logging.error("ssh-agent command not found. Please ensure OpenSSH client is installed and in your PATH.")
+            QMessageBox.critical(self, "Error", "ssh-agent command not found. Please ensure OpenSSH client is installed and in your PATH.")
+            self.check_ssh_agent_status()
+            return False
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"An unexpected error occurred: {e}")
-
-        self.check_ssh_agent_status()
+            logging.error(f"An unexpected error occurred while starting SSH Agent: {e}")
+            QMessageBox.critical(self, "Error", f"An unexpected error occurred while starting SSH Agent: {e}")
+            self.check_ssh_agent_status()
+            return False
 
     def stop_ssh_agent(self):
         """Stops the currently running SSH agent."""
         if not self.git_installed:
             QMessageBox.warning(self, "Git Not Installed", "Git is not installed. Cannot stop SSH Agent.")
-            return
+            return False
 
-        if not self.ssh_agent_pid: # Use stored PID
+        # Use the stored PID if available, otherwise try environment variable
+        pid_to_kill = self.ssh_agent_pid if self.ssh_agent_pid else (int(os.environ.get("SSH_AGENT_PID", 0)) if os.environ.get("SSH_AGENT_PID") else None)
+
+        if not pid_to_kill:
             QMessageBox.warning(self, "SSH Agent Not Running", "SSH Agent is not running or its PID is not known to this application.")
-            return
+            return False
 
-        pid = str(self.ssh_agent_pid)
         reply = QMessageBox.question(self, "Stop SSH Agent",
-                                     f"Are you sure you want to stop the SSH Agent (PID: {pid})?\n"
+                                     f"Are you sure you want to stop the SSH Agent (PID: {pid_to_kill})?\n"
                                      "This will remove all loaded keys and might affect other applications using this agent.",
                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if reply == QMessageBox.No:
-            return
+            return False
 
         try:
-            success, message = self.run_command(['kill', pid])
+            success, message = self.run_command(['kill', str(pid_to_kill)], suppress_errors=True)
             if success:
-                if 'SSH_AUTH_SOCK' in os.environ: del os.environ['SSH_AUTH_SOCK']
-                if 'SSH_AGENT_PID' in os.environ: del os.environ['SSH_AGENT_PID']
-                self.ssh_agent_pid = None # Clear stored PID
+                # Clear environment variables for this process
+                if 'SSH_AUTH_SOCK' in os.environ:
+                    del os.environ['SSH_AUTH_SOCK']
+                if 'SSH_AGENT_PID' in os.environ:
+                    del os.environ['SSH_AGENT_PID']
+                self.ssh_agent_pid = None
+                self.ssh_auth_sock = None
+                logging.info(f"SSH Agent (PID: {pid_to_kill}) stopped successfully.")
+                self.check_ssh_agent_status()
+                return True
             else:
+                logging.error(f"Failed to stop SSH Agent (PID: {pid_to_kill}): {message}")
                 QMessageBox.critical(self, "SSH Agent Stop Error", f"Failed to stop SSH Agent: {message}")
+                self.check_ssh_agent_status()
+                return False
         except Exception as e:
+            logging.error(f"An unexpected error occurred while stopping SSH Agent: {e}")
             QMessageBox.critical(self, "Error", f"An unexpected error occurred while stopping SSH Agent: {e}")
-        
-        self.check_ssh_agent_status()
+            self.check_ssh_agent_status()
+            return False
 
     def browse_default_ssh_key_path(self):
         """Opens a file dialog to select the default SSH private key path."""
@@ -848,13 +978,20 @@ class GitSettingsTab(QWidget):
             QMessageBox.warning(self, "Key Not Found", f"The selected SSH key not found at '{key_path}'.")
             return
 
-        success, message = self.run_command(['ssh-add', key_path])
+        # Pass the current environment including SSH_AUTH_SOCK to ssh-add
+        success, message = self.run_command(['ssh-add', key_path], env=os.environ)
         if success:
-            pass
+            QMessageBox.information(self, "Key Added", f"Successfully added key '{os.path.basename(key_path)}' to SSH Agent.")
         else:
             QMessageBox.critical(self, "Error", f"Failed to add SSH key to agent: {message}\n"
                                  "Ensure SSH agent is running and you have entered your passphrase if prompted in the terminal.")
         self.check_ssh_agent_status()
+
+    def on_auto_start_ssh_agent_changed(self, state):
+        """Handles the state change of the auto-start SSH agent checkbox."""
+        is_checked = (state == Qt.CheckState.Checked)
+        self.auto_start_ssh_agent = is_checked
+        self.auto_start_ssh_agent_setting_changed.emit(is_checked) # Emit signal to parent
 
     def generate_ssh_key_for_selected_account(self):
         """Launches the AddAccountDialog pre-filled for generating a key for a selected account."""
